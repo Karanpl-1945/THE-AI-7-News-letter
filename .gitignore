@@ -3,3 +3,12 @@ venv/
 __pycache__/
 *.pyc
 output/
+
+# Local reference files unrelated to the application
+AI_Newsletter_Docs_v1.0.zip
+Docker_Kubernetes_Placement_Prep_Karan_Pratap_Lohiya.pdf
+RAG_FineTuning_Karan_Pratap_Lohiya.pdf
+docker_kubernetes_notes.html
+rag_finetuning_notes.html
+AI_Dispatch_Project_Guide.pdf
+project_explainer.html
