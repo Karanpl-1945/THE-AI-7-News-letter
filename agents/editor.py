@@ -17,7 +17,7 @@ def _get_client() -> Groq:
 @observe(name="groq_editor_call", as_type="chain")
 def _call(prompt: str, max_tokens: int = 1024) -> str:
     resp = _get_client().chat.completions.create(
-        model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        model=os.getenv("GROQ_EDITOR_MODEL", "llama-3.3-70b-versatile"),
         max_tokens=max_tokens,
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},

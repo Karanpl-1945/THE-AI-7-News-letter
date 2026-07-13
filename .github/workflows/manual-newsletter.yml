@@ -38,6 +38,8 @@ jobs:
       - name: Generate newsletter without sending email
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_SUMMARY_MODEL: ${{ vars.GROQ_SUMMARY_MODEL || 'llama-3.1-8b-instant' }}
+          GROQ_EDITOR_MODEL: ${{ vars.GROQ_EDITOR_MODEL || 'llama-3.3-70b-versatile' }}
           GITHUB_TOKEN: ${{ github.token }}
           LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
           LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}

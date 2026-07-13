@@ -45,7 +45,7 @@ Return this exact JSON (no markdown, no extra text):
 
     try:
         resp = _get_client().chat.completions.create(
-            model=os.getenv("GROQ_MODEL", "llama-3.1-8b-instant"),
+            model=os.getenv("GROQ_SUMMARY_MODEL", "llama-3.1-8b-instant"),
             max_tokens=512,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},  # Groq supports JSON mode on most models
