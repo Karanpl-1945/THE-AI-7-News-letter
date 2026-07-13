@@ -1,0 +1,132 @@
+arxiv:
+  categories: [cs.AI, cs.LG, cs.CL, stat.ML]
+  max_results: 25
+  days_back: 7
+
+github:
+  watch_repos:
+    - langchain-ai/langchain
+    - langchain-ai/langgraph
+    - crewAIInc/crewAI
+    - microsoft/autogen
+    - deepset-ai/haystack
+    - NVIDIA/NeMo
+    - run-llama/llama_index
+    - BerriAI/litellm
+    - huggingface/transformers
+    - vllm-project/vllm
+    - ollama/ollama
+    - openai/openai-python
+    - anthropics/anthropic-sdk-python
+    - deepseek-ai/DeepSeek-V3
+    - mistralai/mistral-common
+    - unslothai/unsloth
+    - ggerganov/llama.cpp
+  trending_language: python
+  trending_since: weekly
+  max_trending: 10
+
+rss_feeds:
+  ai_blogs:
+    - name: "OpenAI Blog"
+      url: "https://openai.com/blog/rss.xml"
+    - name: "Anthropic Blog"
+      url: "https://www.anthropic.com/rss.xml"
+    - name: "Google AI Blog"
+      url: "https://blog.google/technology/ai/rss/"
+    - name: "Meta AI Blog"
+      url: "https://ai.meta.com/blog/rss.xml"
+    - name: "HuggingFace Blog"
+      url: "https://huggingface.co/blog/feed.xml"
+    - name: "The Batch (DeepLearning.AI)"
+      url: "https://www.deeplearning.ai/the-batch/feed/"
+    - name: "Import AI"
+      url: "https://importai.substack.com/feed"
+    - name: "MIT Technology Review AI"
+      url: "https://www.technologyreview.com/feed/"
+    - name: "Towards Data Science"
+      url: "https://towardsdatascience.com/feed"
+  community:
+    - name: "Reddit MachineLearning"
+      url: "https://www.reddit.com/r/MachineLearning/.rss"
+    - name: "Reddit LocalLLaMA"
+      url: "https://www.reddit.com/r/LocalLLaMA/.rss"
+    - name: "Reddit artificial"
+      url: "https://www.reddit.com/r/artificial/.rss"
+
+papers_with_code:
+  enabled: true
+  limit: 10
+
+# Maximum number of collected items sent to Groq in one newsletter run.
+# Collection can remain broad; this deterministic preselection controls LLM usage.
+preselection:
+  limits:
+    papers: 8
+    models: 4
+    github: 6
+    news: 8
+    frameworks: 4
+  # Prevent one RSS publisher/company from filling an entire section.
+  max_per_source:
+    models: 2
+    news: 2
+  # Scores are normalized to 0-100. Each category can emphasize different
+  # evidence while using the same transparent ranking engine.
+  weights:
+    papers:
+      freshness: 0.20
+      relevance: 0.30
+      credibility: 0.15
+      completeness: 0.10
+      activity: 0.10
+      reproducibility: 0.15
+    models:
+      freshness: 0.30
+      relevance: 0.30
+      credibility: 0.20
+      completeness: 0.10
+      activity: 0.05
+      reproducibility: 0.05
+    github:
+      freshness: 0.20
+      relevance: 0.25
+      credibility: 0.10
+      completeness: 0.10
+      activity: 0.25
+      reproducibility: 0.10
+    news:
+      freshness: 0.30
+      relevance: 0.30
+      credibility: 0.25
+      completeness: 0.10
+      activity: 0.05
+      reproducibility: 0.00
+    frameworks:
+      freshness: 0.25
+      relevance: 0.25
+      credibility: 0.15
+      completeness: 0.10
+      activity: 0.15
+      reproducibility: 0.10
+  source_credibility:
+    arxiv: 0.90
+    paperswithcode: 0.85
+    github_trending: 0.75
+    github_releases: 0.90
+    github_emerging: 0.70
+    framework_docs: 0.95
+    OpenAI: 1.00
+    Anthropic: 1.00
+    Google AI: 0.95
+    Meta AI: 0.95
+    HuggingFace: 0.90
+    Mistral: 0.90
+    Cohere: 0.90
+    The Batch (DeepLearning.AI): 0.90
+    Import AI: 0.85
+    MIT Technology Review AI: 0.85
+    Towards Data Science: 0.65
+    Reddit MachineLearning: 0.55
+    Reddit LocalLLaMA: 0.55
+    Reddit artificial: 0.50
