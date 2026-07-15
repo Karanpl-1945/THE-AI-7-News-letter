@@ -21,6 +21,13 @@ class DatabaseMigrationTests(unittest.TestCase):
         self.assertIn("CREATE TABLE IF NOT EXISTS workflow_runs", sql)
         self.assertIn("thread_id TEXT NOT NULL UNIQUE", sql)
 
+    def test_artifact_migration_defines_approved_table(self):
+        sql = MIGRATIONS[2].read_text(encoding="utf-8")
+
+        self.assertIn("CREATE TABLE IF NOT EXISTS newsletter_artifacts", sql)
+        self.assertIn("uq_newsletter_artifact_run_type", sql)
+        self.assertIn("UNIQUE (bucket_name, object_key)", sql)
+
     @patch("database.migrate.database_connection")
     def test_application_schema_executes_migration(self, mock_connection):
         connection = MagicMock()
@@ -33,7 +40,7 @@ class DatabaseMigrationTests(unittest.TestCase):
         mock_connection.assert_called_once_with(
             "postgresql://user:secret@db/newsletter"
         )
-        self.assertEqual(cursor.execute.call_count, 6)
+        self.assertEqual(cursor.execute.call_count, 8)
         self.assertIn(
             "CREATE TABLE IF NOT EXISTS source_items",
             cursor.execute.call_args_list[0].args[0],
