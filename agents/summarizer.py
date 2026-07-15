@@ -1,23 +1,20 @@
 """Uses Groq to enrich each collected item with summary, difficulty, and insights."""
 
 import os
-import json
 from typing import List, Dict, Any
-from groq import Groq
 from langfuse import observe
-
-_client = None
-
-def _get_client() -> Groq:
-    global _client
-    if _client is None:
-        _client = Groq(api_key=os.environ["GROQ_API_KEY"])
-    return _client
+from llm.groq_client import GroqRateLimitError, get_groq_gateway
 
 
 @observe(name="summarize_item", as_type="chain")
 def _summarize_item(item: Dict[str, Any], item_type: str) -> Dict[str, Any]:
-    raw_text = item.get("abstract") or item.get("summary") or item.get("description") or item.get("changelog") or ""
+    raw_text = (
+        item.get("abstract")
+        or item.get("summary")
+        or item.get("description")
+        or item.get("changelog")
+        or ""
+    )
     title = item.get("title", "")
 
     type_hints = {
@@ -44,16 +41,19 @@ Return this exact JSON (no markdown, no extra text):
 }}"""
 
     try:
-        resp = _get_client().chat.completions.create(
+        data = get_groq_gateway().create_json_completion(
+            prompt=prompt,
             model=os.getenv("GROQ_SUMMARY_MODEL", "llama-3.1-8b-instant"),
             max_tokens=512,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},  # Groq supports JSON mode on most models
         )
-        data = json.loads(resp.choices[0].message.content.strip())
         return {**item, **data}
-    except Exception as e:
-        print(f"[Summarizer] Failed on '{title}': {e}")
+    except GroqRateLimitError as error:
+        wait = error.retry_after_seconds
+        retry_hint = f" Retry after approximately {wait:.0f} seconds." if wait else ""
+        print(f"[Summarizer] Groq rate limit stopped summarization.{retry_hint}")
+        raise
+    except Exception as error:
+        print(f"[Summarizer] Failed on '{title}': {error}")
         return {
             **item,
             "summary": raw_text[:300],
