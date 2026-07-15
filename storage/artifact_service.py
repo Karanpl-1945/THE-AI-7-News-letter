@@ -8,7 +8,13 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from database.artifact_repository import ArtifactRecord, save_artifact_metadata
+from botocore.exceptions import ClientError
+
+from database.artifact_repository import (
+    ArtifactRecord,
+    get_artifacts_for_run,
+    save_artifact_metadata,
+)
 from storage.r2_client import R2Settings, create_r2_client
 
 
@@ -108,3 +114,84 @@ def publish_artifact(
         database_url=database_url,
     )
     return PublishedArtifact(record=record, endpoint_url=settings.endpoint_url)
+
+
+def verify_artifact(
+    record: ArtifactRecord,
+    *,
+    settings: R2Settings | None = None,
+    r2_client: Any | None = None,
+) -> bool:
+    """Return whether an R2 object still matches its persisted Neon metadata."""
+    settings = settings or R2Settings.from_environment()
+    if record.bucket_name != settings.bucket_name:
+        return False
+
+    client = r2_client or create_r2_client(settings)
+    try:
+        response = client.head_object(
+            Bucket=record.bucket_name,
+            Key=record.object_key,
+        )
+    except ClientError as error:
+        detail = error.response.get("Error", {})
+        status = error.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        if detail.get("Code") in {"404", "NoSuchKey", "NotFound"} or status == 404:
+            return False
+        raise
+
+    raw_etag = response.get("ETag")
+    remote_etag = raw_etag.strip('"') if isinstance(raw_etag, str) else None
+    metadata = response.get("Metadata", {}) or {}
+    return (
+        response.get("ContentLength") == record.size_bytes
+        and response.get("ContentType") == record.content_type
+        and metadata.get("sha256") == record.sha256
+        and (record.etag is None or remote_etag == record.etag)
+    )
+
+
+def reconcile_artifacts(
+    *,
+    issue_id: UUID,
+    workflow_run_id: UUID,
+    html_path: str | Path,
+    pdf_path: str | Path,
+    settings: R2Settings | None = None,
+    r2_client: Any | None = None,
+    database_url: str | None = None,
+) -> dict[str, ArtifactRecord]:
+    """Verify expected artifacts and repair only missing or mismatched objects."""
+    settings = settings or R2Settings.from_environment()
+    client = r2_client or create_r2_client(settings)
+    persisted = get_artifacts_for_run(
+        workflow_run_id,
+        database_url=database_url,
+    )
+    paths = {"html": Path(html_path), "pdf": Path(pdf_path)}
+    reconciled: dict[str, ArtifactRecord] = {}
+
+    for artifact_type, path in paths.items():
+        record = persisted.get(artifact_type)
+        if record and verify_artifact(
+            record,
+            settings=settings,
+            r2_client=client,
+        ):
+            print(f"  Verified R2 {artifact_type.upper()} object: {record.object_key}")
+            reconciled[artifact_type] = record
+            continue
+
+        reason = "missing metadata" if record is None else "missing or mismatched object"
+        print(f"  Repairing R2 {artifact_type.upper()} artifact ({reason})...")
+        published = publish_artifact(
+            path,
+            issue_id=issue_id,
+            workflow_run_id=workflow_run_id,
+            settings=settings,
+            r2_client=client,
+            database_url=database_url,
+        )
+        reconciled[artifact_type] = published.record
+
+    return reconciled

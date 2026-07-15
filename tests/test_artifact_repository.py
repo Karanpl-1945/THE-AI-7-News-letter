@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 from uuid import UUID
 
-from database.artifact_repository import save_artifact_metadata
+from database.artifact_repository import get_artifacts_for_run, save_artifact_metadata
 
 
 class ArtifactRepositoryTests(unittest.TestCase):
@@ -40,6 +40,35 @@ class ArtifactRepositoryTests(unittest.TestCase):
         self.assertIn("ON CONFLICT (workflow_run_id, artifact_type)", sql)
         self.assertEqual(record.id, self.artifact_id)
         self.assertEqual(record.object_key, "newsletters/2026/W29/run/newsletter.pdf")
+
+    @patch("database.artifact_repository.database_connection")
+    def test_artifacts_are_loaded_by_workflow_run(self, mock_database_connection):
+        mock_database_connection.return_value = self.connection_context
+        self.cursor.fetchall.return_value = [
+            (
+                self.artifact_id,
+                self.issue_id,
+                self.run_id,
+                "html",
+                "private-bucket",
+                "newsletters/issue/run/newsletter.html",
+                "text/html; charset=utf-8",
+                512,
+                "a" * 64,
+                "html-etag",
+            ),
+        ]
+
+        records = get_artifacts_for_run(self.run_id)
+
+        sql, parameters = self.cursor.execute.call_args.args
+        self.assertIn("FROM newsletter_artifacts", sql)
+        self.assertEqual(parameters, (self.run_id,))
+        self.assertEqual(records["html"].workflow_run_id, self.run_id)
+        self.assertEqual(
+            records["html"].object_key,
+            "newsletters/issue/run/newsletter.html",
+        )
 
     def test_invalid_artifact_type_is_rejected_before_database_access(self):
         with self.assertRaisesRegex(ValueError, "artifact_type"):

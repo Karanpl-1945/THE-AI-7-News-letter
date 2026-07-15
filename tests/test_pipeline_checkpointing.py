@@ -39,34 +39,41 @@ class PublishNodeTests(unittest.TestCase):
             "dry_run": True,
         }
 
-    @patch("storage.artifact_service.publish_artifact")
-    def test_publish_node_uploads_both_files_and_returns_object_keys(self, mock_publish):
+    @patch("storage.artifact_service.reconcile_artifacts")
+    def test_publish_node_reconciles_both_files_and_returns_object_keys(
+        self,
+        mock_reconcile,
+    ):
         html_result = MagicMock()
         html_result.record.object_key = "newsletters/issue/run/newsletter.html"
         pdf_result = MagicMock()
         pdf_result.record.object_key = "newsletters/issue/run/newsletter.pdf"
-        mock_publish.side_effect = [html_result, pdf_result]
+        mock_reconcile.return_value = {
+            "html": html_result.record,
+            "pdf": pdf_result.record,
+        }
 
         result = node_publish(self.state)
 
-        self.assertEqual(mock_publish.call_count, 2)
-        first_call = mock_publish.call_args_list[0]
-        self.assertEqual(first_call.args[0], str(self.html_path))
-        self.assertEqual(first_call.kwargs["issue_id"], self.issue_id)
-        self.assertEqual(first_call.kwargs["workflow_run_id"], self.run_id)
+        mock_reconcile.assert_called_once_with(
+            issue_id=self.issue_id,
+            workflow_run_id=self.run_id,
+            html_path=str(self.html_path),
+            pdf_path=str(self.pdf_path),
+        )
         self.assertEqual(
             result["pdf_object_key"],
             "newsletters/issue/run/newsletter.pdf",
         )
 
-    @patch("storage.artifact_service.publish_artifact")
+    @patch("storage.artifact_service.reconcile_artifacts")
     @patch("formatter.pdf_generator.html_to_pdf")
     @patch("graph.pipeline._html_output_path")
     def test_missing_runner_files_are_restored_before_upload(
         self,
         mock_html_output_path,
         mock_html_to_pdf,
-        mock_publish,
+        mock_reconcile,
     ):
         restored_html = Path(self.temporary_directory.name) / "restored.html"
         restored_pdf = Path(self.temporary_directory.name) / "restored.pdf"
@@ -81,7 +88,10 @@ class PublishNodeTests(unittest.TestCase):
         html_result.record.object_key = "newsletters/issue/run/newsletter.html"
         pdf_result = MagicMock()
         pdf_result.record.object_key = "newsletters/issue/run/newsletter.pdf"
-        mock_publish.side_effect = [html_result, pdf_result]
+        mock_reconcile.return_value = {
+            "html": html_result.record,
+            "pdf": pdf_result.record,
+        }
         state = {
             **self.state,
             "html_path": "/old-runner/output/newsletter.html",
@@ -98,13 +108,22 @@ class PublishNodeTests(unittest.TestCase):
             self.state["html_content"],
             self.state["issue_date"],
         )
-        self.assertEqual(mock_publish.call_args_list[0].args[0], str(restored_html))
-        self.assertEqual(mock_publish.call_args_list[1].args[0], str(restored_pdf))
+        self.assertEqual(
+            mock_reconcile.call_args.kwargs["html_path"],
+            str(restored_html),
+        )
+        self.assertEqual(
+            mock_reconcile.call_args.kwargs["pdf_path"],
+            str(restored_pdf),
+        )
         self.assertEqual(result["html_path"], str(restored_html))
         self.assertEqual(result["pdf_path"], str(restored_pdf))
 
-    @patch("storage.artifact_service.publish_artifact")
-    def test_missing_files_without_checkpointed_html_stops_upload(self, mock_publish):
+    @patch("storage.artifact_service.reconcile_artifacts")
+    def test_missing_files_without_checkpointed_html_stops_upload(
+        self,
+        mock_reconcile,
+    ):
         state = {
             **self.state,
             "html_content": "",
@@ -115,7 +134,7 @@ class PublishNodeTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "no HTML content"):
             node_publish(state)
 
-        mock_publish.assert_not_called()
+        mock_reconcile.assert_not_called()
 
     @patch("delivery.email_sender.send_newspaper")
     @patch("formatter.pdf_generator.html_to_pdf")
@@ -232,6 +251,65 @@ class CheckpointExecutionTests(unittest.TestCase):
 
         self.pipeline.invoke.assert_not_called()
         self.assertEqual(result, saved)
+
+    @patch("storage.artifact_service.reconcile_artifacts")
+    @patch("graph.pipeline._ensure_local_artifacts")
+    def test_completed_thread_restores_output_for_current_runner(
+        self,
+        mock_ensure_local_artifacts,
+        mock_reconcile,
+    ):
+        issue_id = UUID("12345678-1234-5678-1234-567812345678")
+        run_id = UUID("87654321-4321-8765-4321-876543218765")
+        saved = {
+            "issue_date": "July 15, 2026",
+            "html_content": "<html>saved output</html>",
+            "html_path": "/old-runner/output/newsletter.html",
+            "pdf_path": "/old-runner/output/newsletter.pdf",
+            "issue_id": str(issue_id),
+            "workflow_run_id": str(run_id),
+            "email_sent": False,
+        }
+        self.pipeline.get_state.return_value = MagicMock(values=saved, next=())
+        mock_ensure_local_artifacts.return_value = (
+            "/current-runner/output/newsletter.html",
+            "/current-runner/output/newsletter.pdf",
+        )
+        html_record = MagicMock()
+        html_record.object_key = "newsletters/issue/run/newsletter.html"
+        pdf_record = MagicMock()
+        pdf_record.object_key = "newsletters/issue/run/newsletter.pdf"
+        mock_reconcile.return_value = {
+            "html": html_record,
+            "pdf": pdf_record,
+        }
+
+        result = invoke_checkpointed_pipeline(
+            self.pipeline,
+            self.initial_state,
+            self.config,
+        )
+
+        self.pipeline.invoke.assert_not_called()
+        mock_ensure_local_artifacts.assert_called_once()
+        mock_reconcile.assert_called_once_with(
+            issue_id=issue_id,
+            workflow_run_id=run_id,
+            html_path="/current-runner/output/newsletter.html",
+            pdf_path="/current-runner/output/newsletter.pdf",
+        )
+        self.assertEqual(
+            result["html_path"],
+            "/current-runner/output/newsletter.html",
+        )
+        self.assertEqual(
+            result["pdf_path"],
+            "/current-runner/output/newsletter.pdf",
+        )
+        self.assertEqual(
+            result["pdf_object_key"],
+            "newsletters/issue/run/newsletter.pdf",
+        )
 
 
 class WorkflowLifecycleTests(unittest.TestCase):

@@ -192,31 +192,27 @@ def node_pdf(state: NewsletterState) -> NewsletterState:
 @observe(name="publish", as_type="tool")
 def node_publish(state: NewsletterState) -> NewsletterState:
     """Upload generated HTML and PDF to private R2 and record them in Neon."""
-    from storage.artifact_service import publish_artifact
+    from storage.artifact_service import reconcile_artifacts
 
     print("\n[Pipeline] Step 7/8 — Publishing HTML and PDF to private R2...")
     html_path, pdf_path = _ensure_local_artifacts(state)
 
     issue_id = UUID(state["issue_id"])
     workflow_run_id = UUID(state["workflow_run_id"])
-    html_artifact = publish_artifact(
-        html_path,
+    artifacts = reconcile_artifacts(
         issue_id=issue_id,
         workflow_run_id=workflow_run_id,
+        html_path=html_path,
+        pdf_path=pdf_path,
     )
-    pdf_artifact = publish_artifact(
-        pdf_path,
-        issue_id=issue_id,
-        workflow_run_id=workflow_run_id,
-    )
-    print(f"  HTML object: {html_artifact.record.object_key}")
-    print(f"  PDF object:  {pdf_artifact.record.object_key}")
+    print(f"  HTML object: {artifacts['html'].object_key}")
+    print(f"  PDF object:  {artifacts['pdf'].object_key}")
     return {
         **state,
         "html_path": html_path,
         "pdf_path": pdf_path,
-        "html_object_key": html_artifact.record.object_key,
-        "pdf_object_key": pdf_artifact.record.object_key,
+        "html_object_key": artifacts["html"].object_key,
+        "pdf_object_key": artifacts["pdf"].object_key,
     }
 
 
@@ -313,7 +309,24 @@ def invoke_checkpointed_pipeline(
         )
 
     print("[Checkpoint] This weekly run is already complete; reusing saved state.")
-    return cast(NewsletterState, snapshot.values)
+    saved_state = dict(snapshot.values)
+    if saved_state.get("html_content"):
+        from storage.artifact_service import reconcile_artifacts
+
+        html_path, pdf_path = _ensure_local_artifacts(
+            cast(NewsletterState, saved_state)
+        )
+        saved_state["html_path"] = html_path
+        saved_state["pdf_path"] = pdf_path
+        artifacts = reconcile_artifacts(
+            issue_id=UUID(saved_state["issue_id"]),
+            workflow_run_id=UUID(saved_state["workflow_run_id"]),
+            html_path=html_path,
+            pdf_path=pdf_path,
+        )
+        saved_state["html_object_key"] = artifacts["html"].object_key
+        saved_state["pdf_object_key"] = artifacts["pdf"].object_key
+    return cast(NewsletterState, saved_state)
 
 
 @observe(name="weekly_newsletter_pipeline", as_type="agent")

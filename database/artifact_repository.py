@@ -25,6 +25,47 @@ class ArtifactRecord:
     etag: str | None
 
 
+def _record_from_row(row) -> ArtifactRecord:
+    return ArtifactRecord(
+        id=row[0],
+        issue_id=row[1],
+        workflow_run_id=row[2],
+        artifact_type=row[3],
+        bucket_name=row[4],
+        object_key=row[5],
+        content_type=row[6],
+        size_bytes=row[7],
+        sha256=row[8],
+        etag=row[9],
+    )
+
+
+def get_artifacts_for_run(
+    workflow_run_id: UUID,
+    *,
+    database_url: str | None = None,
+) -> dict[str, ArtifactRecord]:
+    """Load the persisted artifact metadata for one workflow execution."""
+    with database_connection(database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, issue_id, workflow_run_id, artifact_type,
+                       bucket_name, object_key, content_type,
+                       size_bytes, sha256, etag
+                FROM newsletter_artifacts
+                WHERE workflow_run_id = %s
+                """,
+                (workflow_run_id,),
+            )
+            rows = cursor.fetchall()
+
+    return {
+        record.artifact_type: record
+        for record in (_record_from_row(row) for row in rows)
+    }
+
+
 def save_artifact_metadata(
     *,
     issue_id: UUID,
@@ -86,15 +127,17 @@ def save_artifact_metadata(
 
     if not row:
         raise RuntimeError("PostgreSQL did not return an artifact ID.")
-    return ArtifactRecord(
-        id=row[0],
-        issue_id=issue_id,
-        workflow_run_id=workflow_run_id,
-        artifact_type=artifact_type,
-        bucket_name=bucket_name,
-        object_key=object_key,
-        content_type=content_type,
-        size_bytes=size_bytes,
-        sha256=sha256,
-        etag=etag,
+    return _record_from_row(
+        (
+            row[0],
+            issue_id,
+            workflow_run_id,
+            artifact_type,
+            bucket_name,
+            object_key,
+            content_type,
+            size_bytes,
+            sha256,
+            etag,
+        )
     )
