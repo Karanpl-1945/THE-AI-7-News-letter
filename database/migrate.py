@@ -11,8 +11,14 @@ from database.connection import database_connection
 
 MIGRATIONS = (
     Path(__file__).with_name("migrations") / "001_summary_cache.sql",
+    Path(__file__).with_name("migrations") / "002_workflow_tracking.sql",
 )
-APPLICATION_TABLES = ("source_items", "article_summaries")
+APPLICATION_TABLES = (
+    "source_items",
+    "article_summaries",
+    "newsletter_issues",
+    "workflow_runs",
+)
 
 
 def apply_application_schema(database_url: str | None = None) -> None:
