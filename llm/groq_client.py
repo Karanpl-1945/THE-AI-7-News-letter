@@ -184,6 +184,12 @@ class GroqRequestGateway:
                 )
                 content = (response.choices[0].message.content or "{}").strip()
                 result = json.loads(content)
+                if (
+                    isinstance(result, list)
+                    and len(result) == 1
+                    and isinstance(result[0], dict)
+                ):
+                    result = result[0]
                 if not isinstance(result, dict):
                     raise GroqRequestError("Groq JSON response must be an object")
                 return result

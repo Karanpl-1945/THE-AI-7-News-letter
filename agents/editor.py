@@ -16,6 +16,22 @@ CATEGORY_SPECS = {
     "top_news": ("summarized_news", 4, "News"),
 }
 
+PAPER_FEATURE_FIELDS = (
+    "problem",
+    "approach",
+    "results",
+    "implications",
+    "why_you_should_care",
+)
+TOOL_FEATURE_FIELDS = (
+    "what_it_is",
+    "whats_new",
+    "comparison",
+    "install_cmd",
+    "quickstart_code",
+    "who_should_use",
+)
+
 
 @observe(name="groq_editor_call", as_type="chain")
 def _call(prompt: str, max_tokens: int = 1800) -> Dict[str, Any]:
@@ -135,6 +151,88 @@ def _fallback_package(top_items: Dict[str, List[Dict[str, Any]]]) -> Dict[str, A
     }
 
 
+def _clean_string_list(value: Any) -> List[str]:
+    if not isinstance(value, list):
+        return []
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+
+
+def _clean_feature(value: Any, allowed_fields: tuple[str, ...]) -> Dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        field: value[field].strip()
+        for field in allowed_fields
+        if isinstance(value.get(field), str) and value[field].strip()
+    }
+
+
+def _clean_glossary(value: Any) -> List[Dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    cleaned = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        term = item.get("term")
+        definition = item.get("definition")
+        if isinstance(term, str) and term.strip() and isinstance(definition, str) and definition.strip():
+            cleaned.append({"term": term.strip(), "definition": definition.strip()})
+    return cleaned
+
+
+def _normalize_generated_package(
+    generated: Dict[str, Any],
+    top_items: Dict[str, List[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    """Keep valid editorial fields and fill malformed/missing fields safely."""
+    fallback = _fallback_package(top_items)
+    normalized = dict(fallback)
+    usable_fields = 0
+
+    for key in ("editors_pick_title", "editors_pick_reason"):
+        value = generated.get(key)
+        if isinstance(value, str) and value.strip():
+            normalized[key] = value.strip()
+            usable_fields += 1
+
+    list_fields = {
+        "tldr": 5,
+        "learning_paths": 3,
+        "trending_topics": 8,
+    }
+    for key, limit in list_fields.items():
+        value = _clean_string_list(generated.get(key))[:limit]
+        if value:
+            normalized[key] = value
+            usable_fields += 1
+
+    glossary = _clean_glossary(generated.get("glossary"))[:5]
+    if glossary:
+        normalized["glossary"] = glossary
+        usable_fields += 1
+
+    paper_feature = _clean_feature(
+        generated.get("paper_of_week"),
+        PAPER_FEATURE_FIELDS,
+    )
+    if paper_feature:
+        normalized["paper_of_week"] = paper_feature
+        usable_fields += 1
+
+    tool_feature = _clean_feature(
+        generated.get("tool_of_week"),
+        TOOL_FEATURE_FIELDS,
+    )
+    if tool_feature:
+        normalized["tool_of_week"] = tool_feature
+        usable_fields += 1
+
+    if usable_fields == 0:
+        raise ValueError("Editorial response contains no usable fields")
+    return normalized
+
+
 def _source_anchored_features(
     generated: Dict[str, Any],
     top_items: Dict[str, List[Dict[str, Any]]],
@@ -184,6 +282,7 @@ def create_editorial(state: Dict[str, Any]) -> Dict[str, Any]:
         generated = _call(_build_prompt(top_items), max_tokens=1800)
         if not isinstance(generated, dict):
             raise ValueError("Editorial response must be a JSON object")
+        generated = _normalize_generated_package(generated, top_items)
     except GroqRateLimitError as error:
         wait = error.retry_after_seconds
         retry_hint = f" Retry after approximately {wait:.0f} seconds." if wait else ""
@@ -204,8 +303,8 @@ def create_editorial(state: Dict[str, Any]) -> Dict[str, Any]:
     return {
         **top_items,
         "tldr": _list_value(generated, "tldr")[:5],
-        "editors_pick_title": str(generated.get("editors_pick_title", "")),
-        "editors_pick_reason": str(generated.get("editors_pick_reason", "")),
+        "editors_pick_title": generated.get("editors_pick_title", ""),
+        "editors_pick_reason": generated.get("editors_pick_reason", ""),
         **anchored,
         "glossary": _list_value(generated, "glossary")[:5],
         "learning_paths": _list_value(generated, "learning_paths")[:3],

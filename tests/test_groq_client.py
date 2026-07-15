@@ -9,6 +9,7 @@ from groq import APITimeoutError, RateLimitError
 from llm.groq_client import (
     GroqQuotaExhaustedError,
     GroqRateLimitError,
+    GroqRequestError,
     GroqRequestGateway,
     GroqRequestSettings,
     _parse_duration_seconds,
@@ -67,6 +68,30 @@ class GroqRequestGatewayTests(unittest.TestCase):
         )
 
         self.assertEqual(result, {"status": "ok"})
+        self.assertEqual(client.chat.completions.create.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_single_object_array_is_safely_unwrapped(self):
+        gateway, client, sleep = _gateway([_response([{"status": "ok"}])])
+
+        result = gateway.create_json_completion(
+            prompt="prompt", model="test-model", max_tokens=100
+        )
+
+        self.assertEqual(result, {"status": "ok"})
+        self.assertEqual(client.chat.completions.create.call_count, 1)
+        sleep.assert_not_called()
+
+    def test_multi_object_array_is_rejected_without_another_request(self):
+        gateway, client, sleep = _gateway(
+            [_response([{"first": 1}, {"second": 2}])]
+        )
+
+        with self.assertRaisesRegex(GroqRequestError, "must be an object"):
+            gateway.create_json_completion(
+                prompt="prompt", model="test-model", max_tokens=100
+            )
+
         self.assertEqual(client.chat.completions.create.call_count, 1)
         sleep.assert_not_called()
 

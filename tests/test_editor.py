@@ -87,6 +87,49 @@ class EditorTests(unittest.TestCase):
         self.assertEqual(result["learning_paths"], [])
         self.assertEqual(result["trending_topics"], [])
 
+    def test_partial_editorial_normalizes_invalid_and_missing_fields(self):
+        generated = {
+            "tldr": ["Valid bullet", 123, ""],
+            "editors_pick_title": ["not a string"],
+            "paper_of_week": "not an object",
+            "tool_of_week": {"what_it_is": "Valid tool", "comparison": 42},
+            "glossary": [
+                {"term": "Agent", "definition": "A system."},
+                {"term": "Broken"},
+            ],
+        }
+
+        with patch("agents.editor._call", return_value=generated) as groq_call:
+            result = create_editorial(_state())
+
+        groq_call.assert_called_once()
+        self.assertEqual(result["tldr"], ["Valid bullet"])
+        self.assertEqual(result["editors_pick_title"], "Paper 0")
+        self.assertEqual(result["paper_of_week"]["title"], "Paper 0")
+        self.assertEqual(result["tool_of_week"]["what_it_is"], "Valid tool")
+        self.assertNotIn("comparison", result["tool_of_week"])
+        self.assertEqual(
+            result["glossary"],
+            [{"term": "Agent", "definition": "A system."}],
+        )
+
+    def test_object_with_no_usable_fields_uses_deterministic_fallback(self):
+        generated = {
+            "tldr": "not a list",
+            "editors_pick_title": [],
+            "paper_of_week": None,
+            "tool_of_week": 123,
+            "glossary": [{"term": "Missing definition"}],
+        }
+
+        with patch("agents.editor._call", return_value=generated) as groq_call:
+            result = create_editorial(_state())
+
+        groq_call.assert_called_once()
+        self.assertEqual(result["editors_pick_title"], "Paper 0")
+        self.assertEqual(len(result["tldr"]), 5)
+        self.assertEqual(result["glossary"], [])
+
     def test_editor_propagates_quota_error_instead_of_publishing_fallback(self):
         quota_error = GroqQuotaExhaustedError(
             "daily quota exhausted",
