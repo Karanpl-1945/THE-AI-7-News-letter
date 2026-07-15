@@ -2,6 +2,12 @@ name: Manual newsletter dry run
 
 on:
   workflow_dispatch:
+    inputs:
+      force_new_run:
+        description: Start a fresh checkpoint instead of reusing this week's run
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -54,12 +60,17 @@ jobs:
           GROQ_MIN_REQUEST_INTERVAL_SECONDS: ${{ vars.GROQ_MIN_REQUEST_INTERVAL_SECONDS || '6' }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATABASE_CONNECT_TIMEOUT_SECONDS: ${{ vars.DATABASE_CONNECT_TIMEOUT_SECONDS || '10' }}
+          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ vars.R2_BUCKET_NAME }}
+          R2_PRESIGNED_URL_EXPIRY_SECONDS: ${{ vars.R2_PRESIGNED_URL_EXPIRY_SECONDS || '3600' }}
           WORKFLOW_TRIGGER: github_manual
           GITHUB_TOKEN: ${{ github.token }}
           LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
           LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
           LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL || secrets.LANGFUSE_BASE_URL }}
-        run: python main.py --dry-run
+        run: python main.py --dry-run ${{ inputs.force_new_run && '--force' || '' }}
 
       - name: Upload generated HTML and PDF
         uses: actions/upload-artifact@v4
