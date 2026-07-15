@@ -54,6 +54,7 @@ jobs:
           GROQ_MIN_REQUEST_INTERVAL_SECONDS: ${{ vars.GROQ_MIN_REQUEST_INTERVAL_SECONDS || '6' }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           DATABASE_CONNECT_TIMEOUT_SECONDS: ${{ vars.DATABASE_CONNECT_TIMEOUT_SECONDS || '10' }}
+          WORKFLOW_TRIGGER: github_manual
           GITHUB_TOKEN: ${{ github.token }}
           LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
           LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
