@@ -12,12 +12,14 @@ from database.connection import database_connection
 MIGRATIONS = (
     Path(__file__).with_name("migrations") / "001_summary_cache.sql",
     Path(__file__).with_name("migrations") / "002_workflow_tracking.sql",
+    Path(__file__).with_name("migrations") / "003_newsletter_artifacts.sql",
 )
 APPLICATION_TABLES = (
     "source_items",
     "article_summaries",
     "newsletter_issues",
     "workflow_runs",
+    "newsletter_artifacts",
 )
 
 
