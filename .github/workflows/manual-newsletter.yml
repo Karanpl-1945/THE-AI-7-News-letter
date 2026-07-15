@@ -35,6 +35,14 @@ jobs:
           LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL || secrets.LANGFUSE_BASE_URL }}
         run: python -c "from langfuse import get_client; assert get_client().auth_check(), 'Langfuse authentication failed'"
 
+      - name: Initialize PostgreSQL schema
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_CONNECT_TIMEOUT_SECONDS: ${{ vars.DATABASE_CONNECT_TIMEOUT_SECONDS || '10' }}
+        run: |
+          python -m database.checkpointer
+          python -m database.migrate
+
       - name: Generate newsletter without sending email
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
@@ -44,6 +52,8 @@ jobs:
           GROQ_MAX_RETRY_WAIT_SECONDS: ${{ vars.GROQ_MAX_RETRY_WAIT_SECONDS || '60' }}
           GROQ_REQUEST_TIMEOUT_SECONDS: ${{ vars.GROQ_REQUEST_TIMEOUT_SECONDS || '45' }}
           GROQ_MIN_REQUEST_INTERVAL_SECONDS: ${{ vars.GROQ_MIN_REQUEST_INTERVAL_SECONDS || '6' }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_CONNECT_TIMEOUT_SECONDS: ${{ vars.DATABASE_CONNECT_TIMEOUT_SECONDS || '10' }}
           GITHUB_TOKEN: ${{ github.token }}
           LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
           LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}

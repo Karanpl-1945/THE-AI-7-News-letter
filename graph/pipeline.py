@@ -2,8 +2,9 @@
 
 import concurrent.futures
 from datetime import datetime
-from typing import TypedDict, List, Dict, Any, Optional
+from typing import TypedDict, List, Dict, Any, Optional, cast
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import StateGraph, END
 from langfuse import observe
 
@@ -171,7 +172,8 @@ def route_after_pdf(state: NewsletterState) -> str:
 
 # ── BUILD GRAPH ───────────────────────────────────────────
 
-def build_pipeline():
+def build_pipeline(checkpointer: BaseCheckpointSaver | None = None):
+    """Build the graph, optionally persisting node state with a checkpointer."""
     graph = StateGraph(NewsletterState)
 
     graph.add_node("collect",   node_collect)
@@ -195,11 +197,52 @@ def build_pipeline():
     )
     graph.add_edge("email",     END)
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
+
+
+def build_thread_id(now: datetime, force: bool = False) -> str:
+    """Return one stable checkpoint thread per ISO week.
+
+    A forced run receives a unique suffix so it cannot overwrite or resume the
+    normal weekly execution.
+    """
+    iso_year, iso_week, _ = now.isocalendar()
+    weekly_id = f"newsletter-{iso_year}-W{iso_week:02d}"
+    if force:
+        return f"{weekly_id}-forced-{now.strftime('%Y%m%dT%H%M%S%f')}"
+    return weekly_id
+
+
+def invoke_checkpointed_pipeline(
+    pipeline,
+    initial_state: NewsletterState,
+    config: Dict[str, Any],
+) -> NewsletterState:
+    """Start, resume, or reuse a pipeline execution based on its checkpoint."""
+    snapshot = pipeline.get_state(config)
+
+    if not snapshot.values:
+        print("[Checkpoint] No saved state found; starting a new run.")
+        return cast(
+            NewsletterState,
+            pipeline.invoke(initial_state, config=config),
+        )
+
+    if snapshot.next:
+        pending_nodes = ", ".join(snapshot.next)
+        print(f"[Checkpoint] Resuming pending node(s): {pending_nodes}")
+        return cast(
+            NewsletterState,
+            pipeline.invoke(None, config=config),
+        )
+
+    print("[Checkpoint] This weekly run is already complete; reusing saved state.")
+    return cast(NewsletterState, snapshot.values)
 
 
 @observe(name="weekly_newsletter_pipeline", as_type="agent")
-def run_pipeline(dry_run: bool = False) -> NewsletterState:
+def run_pipeline(dry_run: bool = False, force: bool = False) -> NewsletterState:
+    from database.checkpointer import postgres_checkpointer
     from observability import configure_langfuse
 
     configure_langfuse()
@@ -222,11 +265,15 @@ def run_pipeline(dry_run: bool = False) -> NewsletterState:
         "dry_run": dry_run,
     }
 
-    pipeline = build_pipeline()
+    thread_id = build_thread_id(now, force=force)
+    config = {"configurable": {"thread_id": thread_id}}
     print("=" * 60)
     print("  THE AI DISPATCH — Weekly Newspaper Pipeline")
+    print(f"  Checkpoint thread: {thread_id}")
     print("=" * 60)
-    result = pipeline.invoke(initial_state)
+    with postgres_checkpointer() as checkpointer:
+        pipeline = build_pipeline(checkpointer=checkpointer)
+        result = invoke_checkpointed_pipeline(pipeline, initial_state, config)
     print("\n" + "=" * 60)
     print(f"  Done! Email sent: {result['email_sent']}")
     print(f"  PDF:  {result.get('pdf_path', 'N/A')}")

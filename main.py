@@ -18,11 +18,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Generate HTML and PDF without sending email.",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Start a separate run instead of resuming/reusing this week's checkpoint.",
+    )
     return parser.parse_args()
 
 
 def validate_environment(dry_run: bool) -> None:
-    required = ["GROQ_API_KEY"]
+    required = ["GROQ_API_KEY", "DATABASE_URL"]
     if not dry_run:
         required.extend(["EMAIL_SENDER", "EMAIL_PASSWORD"])
 
@@ -37,6 +42,6 @@ if __name__ == "__main__":
     args = parse_args()
     validate_environment(args.dry_run)
     try:
-        run_pipeline(dry_run=args.dry_run)
+        run_pipeline(dry_run=args.dry_run, force=args.force)
     finally:
         flush_langfuse()
