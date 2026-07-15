@@ -3,6 +3,7 @@
 import concurrent.futures
 from datetime import datetime
 from typing import TypedDict, List, Dict, Any, Optional, cast
+from uuid import UUID
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import StateGraph, END
@@ -32,7 +33,10 @@ class NewsletterState(TypedDict):
     editorial: Dict[str, Any]
     # Rendered output
     html_content: str
+    html_path:    Optional[str]
     pdf_path:     Optional[str]
+    html_object_key: Optional[str]
+    pdf_object_key:  Optional[str]
     email_sent:   bool
     # Metadata
     issue_date:   str
@@ -54,7 +58,7 @@ def node_collect(state: NewsletterState) -> NewsletterState:
     from agents.news_agent          import fetch_news
     from agents.framework_doc_agent import fetch_framework_updates
 
-    print("\n[Pipeline] Step 1/7 — Collecting data from all sources...")
+    print("\n[Pipeline] Step 1/8 — Collecting data from all sources...")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
         futures = {
@@ -85,7 +89,7 @@ def node_preselect(state: NewsletterState) -> NewsletterState:
     """Rank, cap, and diversify items before making any Groq calls."""
     from agents.preselector import preselect_for_summarization
 
-    print("\n[Pipeline] Step 2/7 — Preselecting items for the Groq budget...")
+    print("\n[Pipeline] Step 2/8 — Preselecting items for the Groq budget...")
     selected = preselect_for_summarization(state)
     print(
         f"  Selected — Papers: {len(selected['selected_papers'])} | "
@@ -102,7 +106,7 @@ def node_summarize(state: NewsletterState) -> NewsletterState:
     """Summarise each item using Groq."""
     from agents.summarizer import summarize_items
 
-    print("\n[Pipeline] Step 3/7 — Summarising selected items with Groq...")
+    print("\n[Pipeline] Step 3/8 — Summarising selected items with Groq...")
 
     return {
         **state,
@@ -119,7 +123,7 @@ def node_edit(state: NewsletterState) -> NewsletterState:
     """Editor agent: curate, rank, and generate all special features."""
     from agents.editor import create_editorial
 
-    print("\n[Pipeline] Step 4/7 — Editor agent running...")
+    print("\n[Pipeline] Step 4/8 — Editor agent running...")
     editorial = create_editorial(state)
     return {**state, "editorial": editorial}
 
@@ -129,7 +133,7 @@ def node_format(state: NewsletterState) -> NewsletterState:
     """Render the Jinja2 HTML template."""
     from formatter.formatter import render_newspaper
 
-    print("\n[Pipeline] Step 5/7 — Rendering HTML newspaper...")
+    print("\n[Pipeline] Step 5/8 — Rendering HTML newspaper...")
     html = render_newspaper(state)
 
     # Save HTML to output/
@@ -142,7 +146,7 @@ def node_format(state: NewsletterState) -> NewsletterState:
         f.write(html)
     print(f"  HTML saved to {html_path}")
 
-    return {**state, "html_content": html}
+    return {**state, "html_content": html, "html_path": html_path}
 
 
 @observe(name="pdf", as_type="chain")
@@ -150,9 +154,41 @@ def node_pdf(state: NewsletterState) -> NewsletterState:
     """Convert HTML to PDF."""
     from formatter.pdf_generator import html_to_pdf
 
-    print("\n[Pipeline] Step 6/7 — Generating PDF...")
+    print("\n[Pipeline] Step 6/8 — Generating PDF...")
     pdf_path = html_to_pdf(state["html_content"], state["issue_date"])
     return {**state, "pdf_path": pdf_path}
+
+
+@observe(name="publish", as_type="tool")
+def node_publish(state: NewsletterState) -> NewsletterState:
+    """Upload generated HTML and PDF to private R2 and record them in Neon."""
+    from storage.artifact_service import publish_artifact
+
+    print("\n[Pipeline] Step 7/8 — Publishing HTML and PDF to private R2...")
+    html_path = state.get("html_path")
+    pdf_path = state.get("pdf_path")
+    if not html_path or not pdf_path:
+        raise RuntimeError("HTML and PDF paths are required before publishing.")
+
+    issue_id = UUID(state["issue_id"])
+    workflow_run_id = UUID(state["workflow_run_id"])
+    html_artifact = publish_artifact(
+        html_path,
+        issue_id=issue_id,
+        workflow_run_id=workflow_run_id,
+    )
+    pdf_artifact = publish_artifact(
+        pdf_path,
+        issue_id=issue_id,
+        workflow_run_id=workflow_run_id,
+    )
+    print(f"  HTML object: {html_artifact.record.object_key}")
+    print(f"  PDF object:  {pdf_artifact.record.object_key}")
+    return {
+        **state,
+        "html_object_key": html_artifact.record.object_key,
+        "pdf_object_key": pdf_artifact.record.object_key,
+    }
 
 
 @observe(name="email", as_type="tool")
@@ -160,15 +196,15 @@ def node_email(state: NewsletterState) -> NewsletterState:
     """Send the newspaper by email."""
     from delivery.email_sender import send_newspaper
 
-    print("\n[Pipeline] Step 7/7 — Sending email...")
+    print("\n[Pipeline] Step 8/8 — Sending email...")
     sent = send_newspaper(state["html_content"], state.get("pdf_path"), state["issue_date"])
     return {**state, "email_sent": sent}
 
 
-def route_after_pdf(state: NewsletterState) -> str:
+def route_after_publish(state: NewsletterState) -> str:
     """Skip delivery when generating a dry-run preview."""
     if state["dry_run"]:
-        print("\n[Pipeline] Step 7/7 — Dry run: email skipped.")
+        print("\n[Pipeline] Step 8/8 — Dry run: email skipped.")
         return "finish"
     return "email"
 
@@ -185,6 +221,7 @@ def build_pipeline(checkpointer: BaseCheckpointSaver | None = None):
     graph.add_node("edit",      node_edit)
     graph.add_node("format",    node_format)
     graph.add_node("pdf",       node_pdf)
+    graph.add_node("publish",   node_publish)
     graph.add_node("email",     node_email)
 
     graph.set_entry_point("collect")
@@ -193,9 +230,10 @@ def build_pipeline(checkpointer: BaseCheckpointSaver | None = None):
     graph.add_edge("summarize", "edit")
     graph.add_edge("edit",      "format")
     graph.add_edge("format",    "pdf")
+    graph.add_edge("pdf",       "publish")
     graph.add_conditional_edges(
-        "pdf",
-        route_after_pdf,
+        "publish",
+        route_after_publish,
         {"email": "email", "finish": END},
     )
     graph.add_edge("email",     END)
@@ -277,7 +315,10 @@ def run_pipeline(dry_run: bool = False, force: bool = False) -> NewsletterState:
         "summarized_frameworks": [],
         "editorial": {},
         "html_content": "",
+        "html_path": None,
         "pdf_path": None,
+        "html_object_key": None,
+        "pdf_object_key": None,
         "email_sent": False,
         "issue_date":  now.strftime("%B %d, %Y"),
         "week_number": iso_week,
@@ -307,5 +348,6 @@ def run_pipeline(dry_run: bool = False, force: bool = False) -> NewsletterState:
     print("\n" + "=" * 60)
     print(f"  Done! Email sent: {result['email_sent']}")
     print(f"  PDF:  {result.get('pdf_path', 'N/A')}")
+    print(f"  R2 PDF object: {result.get('pdf_object_key', 'N/A')}")
     print("=" * 60)
     return result
