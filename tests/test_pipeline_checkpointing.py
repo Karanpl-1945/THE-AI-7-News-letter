@@ -2,9 +2,11 @@
 
 from datetime import datetime
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
+from uuid import UUID
 
-from graph.pipeline import build_thread_id, invoke_checkpointed_pipeline
+from database.workflow_repository import WorkflowTracking
+from graph.pipeline import build_thread_id, invoke_checkpointed_pipeline, run_pipeline
 
 
 class ThreadIdTests(unittest.TestCase):
@@ -76,6 +78,76 @@ class CheckpointExecutionTests(unittest.TestCase):
 
         self.pipeline.invoke.assert_not_called()
         self.assertEqual(result, saved)
+
+
+class WorkflowLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.tracking = WorkflowTracking(
+            issue_id=UUID("12345678-1234-5678-1234-567812345678"),
+            run_id=UUID("87654321-4321-8765-4321-876543218765"),
+        )
+        self.checkpointer_context = MagicMock()
+        self.checkpointer_context.__enter__.return_value = MagicMock()
+
+    @patch("observability.configure_langfuse")
+    @patch("database.workflow_repository.fail_workflow_run")
+    @patch("database.workflow_repository.complete_workflow_run")
+    @patch("database.workflow_repository.begin_workflow_run")
+    @patch("database.checkpointer.postgres_checkpointer")
+    @patch("graph.pipeline.invoke_checkpointed_pipeline")
+    @patch("graph.pipeline.build_pipeline")
+    def test_successful_pipeline_completes_workflow_record(
+        self,
+        mock_build_pipeline,
+        mock_invoke,
+        mock_postgres_checkpointer,
+        mock_begin,
+        mock_complete,
+        mock_fail,
+        _mock_configure_langfuse,
+    ):
+        mock_begin.return_value = self.tracking
+        mock_postgres_checkpointer.return_value = self.checkpointer_context
+        mock_build_pipeline.return_value = MagicMock()
+        mock_invoke.return_value = {"email_sent": False, "pdf_path": "output/test.pdf"}
+
+        result = run_pipeline(dry_run=True)
+
+        initial_state = mock_invoke.call_args.args[1]
+        self.assertEqual(initial_state["issue_id"], str(self.tracking.issue_id))
+        self.assertEqual(initial_state["workflow_run_id"], str(self.tracking.run_id))
+        mock_complete.assert_called_once_with(self.tracking, email_sent=False)
+        mock_fail.assert_not_called()
+        self.assertEqual(result["pdf_path"], "output/test.pdf")
+
+    @patch("observability.configure_langfuse")
+    @patch("database.workflow_repository.fail_workflow_run")
+    @patch("database.workflow_repository.complete_workflow_run")
+    @patch("database.workflow_repository.begin_workflow_run")
+    @patch("database.checkpointer.postgres_checkpointer")
+    @patch("graph.pipeline.invoke_checkpointed_pipeline")
+    @patch("graph.pipeline.build_pipeline")
+    def test_failed_pipeline_records_workflow_failure(
+        self,
+        mock_build_pipeline,
+        mock_invoke,
+        mock_postgres_checkpointer,
+        mock_begin,
+        mock_complete,
+        mock_fail,
+        _mock_configure_langfuse,
+    ):
+        error = RuntimeError("pipeline failed")
+        mock_begin.return_value = self.tracking
+        mock_postgres_checkpointer.return_value = self.checkpointer_context
+        mock_build_pipeline.return_value = MagicMock()
+        mock_invoke.side_effect = error
+
+        with self.assertRaisesRegex(RuntimeError, "pipeline failed"):
+            run_pipeline(dry_run=True)
+
+        mock_fail.assert_called_once_with(self.tracking, error)
+        mock_complete.assert_not_called()
 
 
 if __name__ == "__main__":

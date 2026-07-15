@@ -38,6 +38,9 @@ class NewsletterState(TypedDict):
     issue_date:   str
     week_number:  int
     dry_run:      bool
+    issue_id:     str
+    workflow_run_id: str
+    thread_id:    str
 
 
 # ── NODE FUNCTIONS ────────────────────────────────────────
@@ -243,10 +246,26 @@ def invoke_checkpointed_pipeline(
 @observe(name="weekly_newsletter_pipeline", as_type="agent")
 def run_pipeline(dry_run: bool = False, force: bool = False) -> NewsletterState:
     from database.checkpointer import postgres_checkpointer
+    from database.workflow_repository import (
+        begin_workflow_run,
+        complete_workflow_run,
+        fail_workflow_run,
+    )
     from observability import configure_langfuse
 
     configure_langfuse()
     now = datetime.now()
+    iso_year, iso_week, _ = now.isocalendar()
+    issue_key = f"{iso_year}-W{iso_week:02d}"
+    thread_id = build_thread_id(now, force=force)
+    tracking = begin_workflow_run(
+        issue_key=issue_key,
+        issue_date=now.date(),
+        iso_year=iso_year,
+        iso_week=iso_week,
+        thread_id=thread_id,
+        dry_run=dry_run,
+    )
     initial_state: NewsletterState = {
         "papers": [], "model_news": [], "github_trends": [],
         "news_items": [], "framework_updates": [],
@@ -261,19 +280,30 @@ def run_pipeline(dry_run: bool = False, force: bool = False) -> NewsletterState:
         "pdf_path": None,
         "email_sent": False,
         "issue_date":  now.strftime("%B %d, %Y"),
-        "week_number": now.isocalendar()[1],
+        "week_number": iso_week,
         "dry_run": dry_run,
+        "issue_id": str(tracking.issue_id),
+        "workflow_run_id": str(tracking.run_id),
+        "thread_id": thread_id,
     }
 
-    thread_id = build_thread_id(now, force=force)
     config = {"configurable": {"thread_id": thread_id}}
     print("=" * 60)
     print("  THE AI DISPATCH — Weekly Newspaper Pipeline")
     print(f"  Checkpoint thread: {thread_id}")
     print("=" * 60)
-    with postgres_checkpointer() as checkpointer:
-        pipeline = build_pipeline(checkpointer=checkpointer)
-        result = invoke_checkpointed_pipeline(pipeline, initial_state, config)
+    try:
+        with postgres_checkpointer() as checkpointer:
+            pipeline = build_pipeline(checkpointer=checkpointer)
+            result = invoke_checkpointed_pipeline(pipeline, initial_state, config)
+    except Exception as error:
+        try:
+            fail_workflow_run(tracking, error)
+        except Exception as tracking_error:
+            print(f"[Workflow] Could not record pipeline failure: {tracking_error}")
+        raise
+
+    complete_workflow_run(tracking, email_sent=result["email_sent"])
     print("\n" + "=" * 60)
     print(f"  Done! Email sent: {result['email_sent']}")
     print(f"  PDF:  {result.get('pdf_path', 'N/A')}")
