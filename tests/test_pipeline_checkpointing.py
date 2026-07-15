@@ -1,6 +1,8 @@
 """Tests for checkpoint-aware pipeline execution."""
 
 from datetime import datetime
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 from uuid import UUID
@@ -9,6 +11,7 @@ from database.workflow_repository import WorkflowTracking
 from graph.pipeline import (
     build_thread_id,
     invoke_checkpointed_pipeline,
+    node_email,
     node_publish,
     route_after_publish,
     run_pipeline,
@@ -17,11 +20,20 @@ from graph.pipeline import (
 
 class PublishNodeTests(unittest.TestCase):
     def setUp(self):
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        directory = Path(self.temporary_directory.name)
+        self.html_path = directory / "newsletter.html"
+        self.pdf_path = directory / "newsletter.pdf"
+        self.html_path.write_text("<html>checkpoint content</html>", encoding="utf-8")
+        self.pdf_path.write_bytes(b"checkpoint pdf")
         self.issue_id = UUID("12345678-1234-5678-1234-567812345678")
         self.run_id = UUID("87654321-4321-8765-4321-876543218765")
         self.state = {
-            "html_path": "output/newsletter.html",
-            "pdf_path": "output/newsletter.pdf",
+            "html_content": "<html>checkpoint content</html>",
+            "html_path": str(self.html_path),
+            "pdf_path": str(self.pdf_path),
+            "issue_date": "July 16, 2026",
             "issue_id": str(self.issue_id),
             "workflow_run_id": str(self.run_id),
             "dry_run": True,
@@ -39,7 +51,7 @@ class PublishNodeTests(unittest.TestCase):
 
         self.assertEqual(mock_publish.call_count, 2)
         first_call = mock_publish.call_args_list[0]
-        self.assertEqual(first_call.args[0], "output/newsletter.html")
+        self.assertEqual(first_call.args[0], str(self.html_path))
         self.assertEqual(first_call.kwargs["issue_id"], self.issue_id)
         self.assertEqual(first_call.kwargs["workflow_run_id"], self.run_id)
         self.assertEqual(
@@ -48,13 +60,98 @@ class PublishNodeTests(unittest.TestCase):
         )
 
     @patch("storage.artifact_service.publish_artifact")
-    def test_missing_rendered_path_stops_before_upload(self, mock_publish):
-        state = {**self.state, "pdf_path": None}
+    @patch("formatter.pdf_generator.html_to_pdf")
+    @patch("graph.pipeline._html_output_path")
+    def test_missing_runner_files_are_restored_before_upload(
+        self,
+        mock_html_output_path,
+        mock_html_to_pdf,
+        mock_publish,
+    ):
+        restored_html = Path(self.temporary_directory.name) / "restored.html"
+        restored_pdf = Path(self.temporary_directory.name) / "restored.pdf"
+        mock_html_output_path.return_value = restored_html
 
-        with self.assertRaisesRegex(RuntimeError, "paths are required"):
+        def generate_pdf(_html_content, _issue_date):
+            restored_pdf.write_bytes(b"regenerated pdf")
+            return str(restored_pdf)
+
+        mock_html_to_pdf.side_effect = generate_pdf
+        html_result = MagicMock()
+        html_result.record.object_key = "newsletters/issue/run/newsletter.html"
+        pdf_result = MagicMock()
+        pdf_result.record.object_key = "newsletters/issue/run/newsletter.pdf"
+        mock_publish.side_effect = [html_result, pdf_result]
+        state = {
+            **self.state,
+            "html_path": "/old-runner/output/newsletter.html",
+            "pdf_path": "/old-runner/output/newsletter.pdf",
+        }
+
+        result = node_publish(state)
+
+        self.assertEqual(
+            restored_html.read_text(encoding="utf-8"),
+            self.state["html_content"],
+        )
+        mock_html_to_pdf.assert_called_once_with(
+            self.state["html_content"],
+            self.state["issue_date"],
+        )
+        self.assertEqual(mock_publish.call_args_list[0].args[0], str(restored_html))
+        self.assertEqual(mock_publish.call_args_list[1].args[0], str(restored_pdf))
+        self.assertEqual(result["html_path"], str(restored_html))
+        self.assertEqual(result["pdf_path"], str(restored_pdf))
+
+    @patch("storage.artifact_service.publish_artifact")
+    def test_missing_files_without_checkpointed_html_stops_upload(self, mock_publish):
+        state = {
+            **self.state,
+            "html_content": "",
+            "html_path": "/old-runner/missing.html",
+            "pdf_path": "/old-runner/missing.pdf",
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "no HTML content"):
             node_publish(state)
 
         mock_publish.assert_not_called()
+
+    @patch("delivery.email_sender.send_newspaper")
+    @patch("formatter.pdf_generator.html_to_pdf")
+    @patch("graph.pipeline._html_output_path")
+    def test_email_resume_restores_files_on_a_new_runner(
+        self,
+        mock_html_output_path,
+        mock_html_to_pdf,
+        mock_send_newspaper,
+    ):
+        restored_html = Path(self.temporary_directory.name) / "email-restored.html"
+        restored_pdf = Path(self.temporary_directory.name) / "email-restored.pdf"
+        mock_html_output_path.return_value = restored_html
+
+        def generate_pdf(_html_content, _issue_date):
+            restored_pdf.write_bytes(b"regenerated email pdf")
+            return str(restored_pdf)
+
+        mock_html_to_pdf.side_effect = generate_pdf
+        mock_send_newspaper.return_value = True
+        state = {
+            **self.state,
+            "html_path": "/old-runner/missing.html",
+            "pdf_path": "/old-runner/missing.pdf",
+            "dry_run": False,
+        }
+
+        result = node_email(state)
+
+        mock_send_newspaper.assert_called_once_with(
+            self.state["html_content"],
+            str(restored_pdf),
+            self.state["issue_date"],
+        )
+        self.assertTrue(result["email_sent"])
+        self.assertEqual(result["html_path"], str(restored_html))
 
     def test_dry_run_publishes_but_skips_email(self):
         self.assertEqual(route_after_publish(self.state), "finish")

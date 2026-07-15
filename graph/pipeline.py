@@ -2,6 +2,7 @@
 
 import concurrent.futures
 from datetime import datetime
+from pathlib import Path
 from typing import TypedDict, List, Dict, Any, Optional, cast
 from uuid import UUID
 
@@ -48,6 +49,40 @@ class NewsletterState(TypedDict):
 
 
 # ── NODE FUNCTIONS ────────────────────────────────────────
+
+def _html_output_path(issue_date: str) -> Path:
+    """Return the local HTML path for the current execution environment."""
+    safe_date = issue_date.replace(" ", "_").replace(",", "")
+    return Path(__file__).resolve().parent.parent / "output" / f"ai_dispatch_{safe_date}.html"
+
+
+def _ensure_local_artifacts(state: NewsletterState) -> tuple[str, str]:
+    """Restore checkpointed HTML/PDF files when resuming on a new runner."""
+    from formatter.pdf_generator import html_to_pdf
+
+    html_content = state.get("html_content", "")
+    saved_html_path = state.get("html_path")
+    html_path = Path(saved_html_path) if saved_html_path else None
+    if html_path is None or not html_path.is_file():
+        if not html_content:
+            raise RuntimeError("Checkpoint has no HTML content to restore artifacts.")
+        html_path = _html_output_path(state["issue_date"])
+        html_path.parent.mkdir(parents=True, exist_ok=True)
+        html_path.write_text(html_content, encoding="utf-8")
+        print(f"  Restored HTML from checkpoint: {html_path}")
+
+    saved_pdf_path = state.get("pdf_path")
+    pdf_path = Path(saved_pdf_path) if saved_pdf_path else None
+    if pdf_path is None or not pdf_path.is_file():
+        if not html_content:
+            raise RuntimeError("Checkpoint has no HTML content to regenerate the PDF.")
+        regenerated_pdf = html_to_pdf(html_content, state["issue_date"])
+        pdf_path = Path(regenerated_pdf) if regenerated_pdf else None
+        if pdf_path is None or not pdf_path.is_file():
+            raise RuntimeError("PDF restoration from checkpointed HTML failed.")
+        print(f"  Regenerated PDF from checkpoint: {pdf_path}")
+
+    return str(html_path), str(pdf_path)
 
 @observe(name="collect", as_type="chain")
 def node_collect(state: NewsletterState) -> NewsletterState:
@@ -136,17 +171,12 @@ def node_format(state: NewsletterState) -> NewsletterState:
     print("\n[Pipeline] Step 5/8 — Rendering HTML newspaper...")
     html = render_newspaper(state)
 
-    # Save HTML to output/
-    import os
-    output_dir = os.path.join(os.path.dirname(__file__), "..", "output")
-    os.makedirs(output_dir, exist_ok=True)
-    safe_date = state["issue_date"].replace(" ", "_").replace(",", "")
-    html_path = os.path.join(output_dir, f"ai_dispatch_{safe_date}.html")
-    with open(html_path, "w", encoding="utf-8") as f:
-        f.write(html)
+    html_path = _html_output_path(state["issue_date"])
+    html_path.parent.mkdir(parents=True, exist_ok=True)
+    html_path.write_text(html, encoding="utf-8")
     print(f"  HTML saved to {html_path}")
 
-    return {**state, "html_content": html, "html_path": html_path}
+    return {**state, "html_content": html, "html_path": str(html_path)}
 
 
 @observe(name="pdf", as_type="chain")
@@ -165,10 +195,7 @@ def node_publish(state: NewsletterState) -> NewsletterState:
     from storage.artifact_service import publish_artifact
 
     print("\n[Pipeline] Step 7/8 — Publishing HTML and PDF to private R2...")
-    html_path = state.get("html_path")
-    pdf_path = state.get("pdf_path")
-    if not html_path or not pdf_path:
-        raise RuntimeError("HTML and PDF paths are required before publishing.")
+    html_path, pdf_path = _ensure_local_artifacts(state)
 
     issue_id = UUID(state["issue_id"])
     workflow_run_id = UUID(state["workflow_run_id"])
@@ -186,6 +213,8 @@ def node_publish(state: NewsletterState) -> NewsletterState:
     print(f"  PDF object:  {pdf_artifact.record.object_key}")
     return {
         **state,
+        "html_path": html_path,
+        "pdf_path": pdf_path,
         "html_object_key": html_artifact.record.object_key,
         "pdf_object_key": pdf_artifact.record.object_key,
     }
@@ -197,8 +226,14 @@ def node_email(state: NewsletterState) -> NewsletterState:
     from delivery.email_sender import send_newspaper
 
     print("\n[Pipeline] Step 8/8 — Sending email...")
-    sent = send_newspaper(state["html_content"], state.get("pdf_path"), state["issue_date"])
-    return {**state, "email_sent": sent}
+    html_path, pdf_path = _ensure_local_artifacts(state)
+    sent = send_newspaper(state["html_content"], pdf_path, state["issue_date"])
+    return {
+        **state,
+        "html_path": html_path,
+        "pdf_path": pdf_path,
+        "email_sent": sent,
+    }
 
 
 def route_after_publish(state: NewsletterState) -> str:
