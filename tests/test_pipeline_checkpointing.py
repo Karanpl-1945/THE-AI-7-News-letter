@@ -6,7 +6,64 @@ from unittest.mock import MagicMock, patch
 from uuid import UUID
 
 from database.workflow_repository import WorkflowTracking
-from graph.pipeline import build_thread_id, invoke_checkpointed_pipeline, run_pipeline
+from graph.pipeline import (
+    build_thread_id,
+    invoke_checkpointed_pipeline,
+    node_publish,
+    route_after_publish,
+    run_pipeline,
+)
+
+
+class PublishNodeTests(unittest.TestCase):
+    def setUp(self):
+        self.issue_id = UUID("12345678-1234-5678-1234-567812345678")
+        self.run_id = UUID("87654321-4321-8765-4321-876543218765")
+        self.state = {
+            "html_path": "output/newsletter.html",
+            "pdf_path": "output/newsletter.pdf",
+            "issue_id": str(self.issue_id),
+            "workflow_run_id": str(self.run_id),
+            "dry_run": True,
+        }
+
+    @patch("storage.artifact_service.publish_artifact")
+    def test_publish_node_uploads_both_files_and_returns_object_keys(self, mock_publish):
+        html_result = MagicMock()
+        html_result.record.object_key = "newsletters/issue/run/newsletter.html"
+        pdf_result = MagicMock()
+        pdf_result.record.object_key = "newsletters/issue/run/newsletter.pdf"
+        mock_publish.side_effect = [html_result, pdf_result]
+
+        result = node_publish(self.state)
+
+        self.assertEqual(mock_publish.call_count, 2)
+        first_call = mock_publish.call_args_list[0]
+        self.assertEqual(first_call.args[0], "output/newsletter.html")
+        self.assertEqual(first_call.kwargs["issue_id"], self.issue_id)
+        self.assertEqual(first_call.kwargs["workflow_run_id"], self.run_id)
+        self.assertEqual(
+            result["pdf_object_key"],
+            "newsletters/issue/run/newsletter.pdf",
+        )
+
+    @patch("storage.artifact_service.publish_artifact")
+    def test_missing_rendered_path_stops_before_upload(self, mock_publish):
+        state = {**self.state, "pdf_path": None}
+
+        with self.assertRaisesRegex(RuntimeError, "paths are required"):
+            node_publish(state)
+
+        mock_publish.assert_not_called()
+
+    def test_dry_run_publishes_but_skips_email(self):
+        self.assertEqual(route_after_publish(self.state), "finish")
+
+    def test_normal_run_continues_to_email(self):
+        self.assertEqual(
+            route_after_publish({**self.state, "dry_run": False}),
+            "email",
+        )
 
 
 class ThreadIdTests(unittest.TestCase):
