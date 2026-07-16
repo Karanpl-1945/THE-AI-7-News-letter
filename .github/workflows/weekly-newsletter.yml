@@ -1,6 +1,9 @@
-name: Manual newsletter dry run
+name: Weekly newsletter generation
 
 on:
+  # GitHub cron uses UTC: Sunday 02:30 UTC = Sunday 08:00 IST.
+  schedule:
+    - cron: "30 2 * * 0"
   workflow_dispatch:
     inputs:
       force_new_run:
@@ -13,7 +16,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: manual-newsletter-dry-run
+  group: weekly-newsletter-generation
   cancel-in-progress: false
 
 jobs:
@@ -65,7 +68,7 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ vars.R2_BUCKET_NAME }}
           R2_PRESIGNED_URL_EXPIRY_SECONDS: ${{ vars.R2_PRESIGNED_URL_EXPIRY_SECONDS || '3600' }}
-          WORKFLOW_TRIGGER: github_manual
+          WORKFLOW_TRIGGER: ${{ github.event_name == 'schedule' && 'github_schedule' || 'github_manual' }}
           GITHUB_TOKEN: ${{ github.token }}
           LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
           LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
