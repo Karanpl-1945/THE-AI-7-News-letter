@@ -1,9 +1,10 @@
 name: Weekly newsletter generation
 
 on:
-  # GitHub cron uses UTC: Sunday 02:30 UTC = Sunday 08:00 IST.
+  # Temporary automatic-trigger test: every day at 2:03 PM IST.
   schedule:
-    - cron: "30 2 * * 0"
+    - cron: "5 14 * * *"
+      timezone: "Asia/Kolkata"
   workflow_dispatch:
     inputs:
       force_new_run:
