@@ -1,9 +1,9 @@
 name: Weekly newsletter generation
 
 on:
-  # Temporary automatic-trigger test: every day at 2:03 PM IST.
+  # Daily at 8:00 AM IST (02:30 UTC).
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "30 2 * * *"
   workflow_dispatch:
     inputs:
       force_new_run:

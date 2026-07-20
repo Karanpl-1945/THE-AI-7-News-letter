@@ -17,9 +17,8 @@ class GitHubWorkflowTests(unittest.TestCase):
     def setUpClass(cls):
         cls.workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
 
-    def test_temporary_schedule_is_daily_at_two_oh_three_ist(self):
-        self.assertIn('cron: "3 14 * * *"', self.workflow)
-        self.assertIn('timezone: "Asia/Kolkata"', self.workflow)
+    def test_schedule_is_daily_at_eight_am_ist(self):
+        self.assertIn('cron: "30 2 * * *"', self.workflow)
 
     def test_manual_trigger_and_force_option_remain_available(self):
         self.assertIn("workflow_dispatch:", self.workflow)
