@@ -64,6 +64,9 @@ jobs:
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_TRANSPORT: ${{ vars.EMAIL_TRANSPORT || 'gmail_smtp' }}
           USER_NAME: ${{ vars.USER_NAME }}
+          API_BASE_URL: ${{ vars.API_BASE_URL }}
+          API_SIGNING_SECRET: ${{ secrets.API_SIGNING_SECRET }}
+          API_TOKEN_MAX_AGE_SECONDS: ${{ vars.API_TOKEN_MAX_AGE_SECONDS || '259200' }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_SUMMARY_MODEL: ${{ vars.GROQ_SUMMARY_MODEL || 'llama-3.1-8b-instant' }}
           GROQ_EDITOR_MODEL: ${{ vars.GROQ_EDITOR_MODEL || 'llama-3.3-70b-versatile' }}
