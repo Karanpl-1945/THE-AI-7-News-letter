@@ -1,7 +1,7 @@
 """Create and verify PostgreSQL connections.
 
-This module deliberately does not create tables or attach a LangGraph
-checkpointer yet. It is the shared connection boundary those features will use.
+This module is only the shared connection boundary — schema creation lives in
+`database/migrate.py` and LangGraph checkpointing lives in `database/checkpointer.py`.
 """
 
 from __future__ import annotations

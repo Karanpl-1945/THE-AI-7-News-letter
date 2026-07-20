@@ -36,7 +36,7 @@ def validate_environment(dry_run: bool) -> None:
         "R2_BUCKET_NAME",
     ]
     if not dry_run:
-        required.extend(["EMAIL_SENDER", "EMAIL_PASSWORD"])
+        required.extend(["EMAIL_SENDER", "EMAIL_PASSWORD", "ADMIN_EMAIL"])
 
     missing = [key for key in required if not os.getenv(key)]
     if missing:

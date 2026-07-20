@@ -130,6 +130,21 @@ class EditorTests(unittest.TestCase):
         self.assertEqual(len(result["tldr"]), 5)
         self.assertEqual(result["glossary"], [])
 
+    def test_editorial_feedback_is_included_in_the_prompt_when_present(self):
+        with patch("agents.editor._call", return_value={}) as groq_call:
+            create_editorial({**_state(), "editorial_feedback": "Cut the tool of the week section."})
+
+        prompt = groq_call.call_args.args[0]
+        self.assertIn("The admin reviewed the previous draft", prompt)
+        self.assertIn("Cut the tool of the week section.", prompt)
+
+    def test_editorial_feedback_is_absent_from_the_prompt_by_default(self):
+        with patch("agents.editor._call", return_value={}) as groq_call:
+            create_editorial(_state())
+
+        prompt = groq_call.call_args.args[0]
+        self.assertNotIn("The admin reviewed the previous draft", prompt)
+
     def test_editor_propagates_quota_error_instead_of_publishing_fallback(self):
         quota_error = GroqQuotaExhaustedError(
             "daily quota exhausted",

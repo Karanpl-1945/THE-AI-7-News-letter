@@ -29,8 +29,10 @@ class GitHubWorkflowTests(unittest.TestCase):
         self.assertIn("'github_schedule'", self.workflow)
         self.assertIn("'github_manual'", self.workflow)
 
-    def test_scheduled_workflow_does_not_send_email(self):
-        self.assertIn("python main.py --dry-run", self.workflow)
+    def test_scheduled_run_notifies_the_admin_unless_dry_run_is_requested(self):
+        self.assertIn("dry_run:", self.workflow)
+        self.assertIn("inputs.dry_run && '--dry-run'", self.workflow)
+        self.assertNotIn("python main.py --dry-run ${{", self.workflow)
 
 
 if __name__ == "__main__":

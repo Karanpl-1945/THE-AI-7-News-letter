@@ -77,15 +77,21 @@ def _prompt_payload(top_items: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any
     }
 
 
-def _build_prompt(top_items: Dict[str, List[Dict[str, Any]]]) -> str:
+def _build_prompt(top_items: Dict[str, List[Dict[str, Any]]], editorial_feedback: str | None = None) -> str:
     payload = json.dumps(_prompt_payload(top_items), ensure_ascii=False)
+    feedback_block = ""
+    if editorial_feedback:
+        feedback_block = (
+            f"\nThe admin reviewed the previous draft and requested: {editorial_feedback}\n"
+            f"Address this feedback directly in your selections and writing.\n"
+        )
     return f"""You are the editor of THE AI 7 weekly AI intelligence brief.
 The stories below were already filtered, deduplicated, ranked, and ordered by a deterministic system.
 Do not re-rank them. Use only the supplied evidence; do not invent benchmarks, URLs, releases, or claims.
 
 User interests: {os.getenv('USER_INTERESTS', 'LLMs, agents')}
 Skill level: {os.getenv('SKILL_LEVEL', 'intermediate')}
-
+{feedback_block}
 SELECTED STORIES:
 {payload}
 
@@ -277,9 +283,10 @@ def create_editorial(state: Dict[str, Any]) -> Dict[str, Any]:
     print("[Editor] Using deterministic ranking for top items...")
     top_items = _select_top_items(state)
     print("[Editor] Generating the complete editorial package in one Groq call...")
+    editorial_feedback = state.get("editorial_feedback")
 
     try:
-        generated = _call(_build_prompt(top_items), max_tokens=1800)
+        generated = _call(_build_prompt(top_items, editorial_feedback), max_tokens=1800)
         if not isinstance(generated, dict):
             raise ValueError("Editorial response must be a JSON object")
         generated = _normalize_generated_package(generated, top_items)

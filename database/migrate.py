@@ -13,6 +13,7 @@ MIGRATIONS = (
     Path(__file__).with_name("migrations") / "001_summary_cache.sql",
     Path(__file__).with_name("migrations") / "002_workflow_tracking.sql",
     Path(__file__).with_name("migrations") / "003_newsletter_artifacts.sql",
+    Path(__file__).with_name("migrations") / "004_review_and_subscribers.sql",
 )
 APPLICATION_TABLES = (
     "source_items",
@@ -20,6 +21,9 @@ APPLICATION_TABLES = (
     "newsletter_issues",
     "workflow_runs",
     "newsletter_artifacts",
+    "approvals",
+    "subscribers",
+    "email_deliveries",
 )
 
 

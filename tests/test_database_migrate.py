@@ -28,6 +28,17 @@ class DatabaseMigrationTests(unittest.TestCase):
         self.assertIn("uq_newsletter_artifact_run_type", sql)
         self.assertIn("UNIQUE (bucket_name, object_key)", sql)
 
+    def test_review_and_subscribers_migration_defines_approved_tables(self):
+        sql = MIGRATIONS[3].read_text(encoding="utf-8")
+
+        self.assertIn("CREATE TABLE IF NOT EXISTS approvals", sql)
+        self.assertIn("CREATE TABLE IF NOT EXISTS subscribers", sql)
+        self.assertIn("CREATE TABLE IF NOT EXISTS email_deliveries", sql)
+        self.assertIn("uq_email_delivery_issue_subscriber", sql)
+        self.assertIn("'reviewing'", sql)
+        self.assertIn("'changes_requested'", sql)
+        self.assertIn("'approved'", sql)
+
     @patch("database.migrate.database_connection")
     def test_application_schema_executes_migration(self, mock_connection):
         connection = MagicMock()
@@ -40,7 +51,7 @@ class DatabaseMigrationTests(unittest.TestCase):
         mock_connection.assert_called_once_with(
             "postgresql://user:secret@db/newsletter"
         )
-        self.assertEqual(cursor.execute.call_count, 8)
+        self.assertEqual(cursor.execute.call_count, 12)
         self.assertIn(
             "CREATE TABLE IF NOT EXISTS source_items",
             cursor.execute.call_args_list[0].args[0],

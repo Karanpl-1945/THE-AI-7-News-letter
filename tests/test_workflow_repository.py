@@ -55,13 +55,53 @@ class WorkflowRepositoryTests(unittest.TestCase):
         mock_database_connection.return_value = self.connection_context
         tracking = WorkflowTracking(self.issue_id, self.run_id)
 
-        complete_workflow_run(tracking, email_sent=False)
+        complete_workflow_run(tracking, admin_notified=False)
 
         self.assertEqual(self.cursor.execute.call_count, 2)
         self.assertEqual(
             self.cursor.execute.call_args_list[1].args[1],
             ("generated", self.issue_id),
         )
+
+    @patch("database.workflow_repository.database_connection")
+    def test_completion_awaits_review_once_admin_is_notified(self, mock_database_connection):
+        mock_database_connection.return_value = self.connection_context
+        tracking = WorkflowTracking(self.issue_id, self.run_id)
+
+        complete_workflow_run(tracking, admin_notified=True)
+
+        self.assertEqual(
+            self.cursor.execute.call_args_list[1].args[1],
+            ("reviewing", self.issue_id),
+        )
+
+    @patch("database.workflow_repository.database_connection")
+    def test_get_issue_by_key_returns_latest_run_thread(self, mock_database_connection):
+        from database.workflow_repository import get_issue_by_key
+
+        mock_database_connection.return_value = self.connection_context
+        self.cursor.fetchone.return_value = (
+            self.issue_id,
+            "reviewing",
+            "newsletter-2026-W29",
+            self.run_id,
+        )
+
+        result = get_issue_by_key("2026-W29")
+
+        self.assertEqual(result.issue_id, self.issue_id)
+        self.assertEqual(result.status, "reviewing")
+        self.assertEqual(result.thread_id, "newsletter-2026-W29")
+        self.assertEqual(result.workflow_run_id, self.run_id)
+
+    @patch("database.workflow_repository.database_connection")
+    def test_get_issue_by_key_returns_none_when_missing(self, mock_database_connection):
+        from database.workflow_repository import get_issue_by_key
+
+        mock_database_connection.return_value = self.connection_context
+        self.cursor.fetchone.return_value = None
+
+        self.assertIsNone(get_issue_by_key("2026-W99"))
 
     @patch("database.workflow_repository.database_connection")
     def test_failure_records_error_and_failed_status(self, mock_database_connection):

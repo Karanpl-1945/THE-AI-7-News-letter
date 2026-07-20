@@ -1,21 +1,23 @@
-name: Weekly newsletter generation
+name: Review newsletter
 
 on:
-  # Daily at 8:00 AM IST (02:30 UTC).
-  schedule:
-    - cron: "30 2 * * *"
   workflow_dispatch:
     inputs:
-      force_new_run:
-        description: Start a fresh checkpoint instead of reusing this week's run
+      issue_key:
+        description: "Issue key from the admin review email, e.g. 2026-W29"
+        required: true
+        type: string
+      decision:
+        description: Approve to send to subscribers, or request changes with feedback below
+        required: true
+        type: choice
+        options:
+          - approve
+          - request_changes
+      feedback:
+        description: "Required when decision=request_changes: what to change and why"
         required: false
-        type: boolean
-        default: false
-      dry_run:
-        description: Generate only — skip the admin review email entirely
-        required: false
-        type: boolean
-        default: false
+        type: string
 
 permissions:
   contents: read
@@ -25,7 +27,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  generate-newsletter:
+  review-newsletter:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -42,28 +44,8 @@ jobs:
       - name: Install Python dependencies
         run: python -m pip install -r requirements.txt
 
-      - name: Verify Langfuse authentication
+      - name: Apply the admin's review decision
         env:
-          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
-          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
-          LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL || secrets.LANGFUSE_BASE_URL }}
-        run: python -c "from langfuse import get_client; assert get_client().auth_check(), 'Langfuse authentication failed'"
-
-      - name: Initialize PostgreSQL schema
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
-          DATABASE_CONNECT_TIMEOUT_SECONDS: ${{ vars.DATABASE_CONNECT_TIMEOUT_SECONDS || '10' }}
-        run: |
-          python -m database.checkpointer
-          python -m database.migrate
-
-      - name: Generate newsletter and notify admin for review
-        env:
-          ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
-          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
-          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-          EMAIL_TRANSPORT: ${{ vars.EMAIL_TRANSPORT || 'gmail_smtp' }}
-          USER_NAME: ${{ vars.USER_NAME }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_SUMMARY_MODEL: ${{ vars.GROQ_SUMMARY_MODEL || 'llama-3.1-8b-instant' }}
           GROQ_EDITOR_MODEL: ${{ vars.GROQ_EDITOR_MODEL || 'llama-3.3-70b-versatile' }}
@@ -78,17 +60,25 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ vars.R2_BUCKET_NAME }}
           R2_PRESIGNED_URL_EXPIRY_SECONDS: ${{ vars.R2_PRESIGNED_URL_EXPIRY_SECONDS || '3600' }}
-          WORKFLOW_TRIGGER: ${{ github.event_name == 'schedule' && 'github_schedule' || 'github_manual' }}
-          GITHUB_TOKEN: ${{ github.token }}
+          ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_TRANSPORT: ${{ vars.EMAIL_TRANSPORT || 'gmail_smtp' }}
+          USER_NAME: ${{ vars.USER_NAME }}
           LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
           LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
           LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL || secrets.LANGFUSE_BASE_URL }}
-        run: python main.py ${{ inputs.dry_run && '--dry-run' || '' }} ${{ inputs.force_new_run && '--force' || '' }}
+        run: |
+          python -m graph.review \
+            --issue-key "${{ inputs.issue_key }}" \
+            --decision "${{ inputs.decision }}" \
+            --feedback "${{ inputs.feedback }}"
 
-      - name: Upload generated HTML and PDF
+      - name: Upload regenerated HTML and PDF (only on request_changes)
+        if: inputs.decision == 'request_changes'
         uses: actions/upload-artifact@v4
         with:
-          name: ai-newsletter-${{ github.run_number }}
+          name: ai-newsletter-review-${{ github.run_number }}
           path: output/
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 7

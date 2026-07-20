@@ -1,51 +1,97 @@
-"""Sends the weekly newspaper via Gmail SMTP — HTML in body + PDF attachment."""
+"""Sends the newspaper preview to the admin, and the final issue to subscribers."""
 
 import os
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.application import MIMEApplication
 from typing import Optional
 
+from delivery.transport import get_email_transport
 
-def send_newspaper(html_content: str, pdf_path: Optional[str], issue_date: str) -> bool:
-    sender   = os.environ.get("EMAIL_SENDER", "")
-    password = os.environ.get("EMAIL_PASSWORD", "")
-    recipient= os.environ.get("EMAIL_RECIPIENT", sender)
-    user     = os.environ.get("USER_NAME", "Reader")
 
-    if not sender or not password:
-        print("[Email] EMAIL_SENDER or EMAIL_PASSWORD not set. Skipping.")
+def _review_action_buttons(issue_key: str) -> str:
+    """Real one-tap Approve/Request-changes buttons, when the API is deployed."""
+    api_base_url = os.environ.get("API_BASE_URL", "").strip().rstrip("/")
+    if not api_base_url:
+        return ""
+
+    from api.security import make_review_token
+
+    approve_url = f"{api_base_url}/review/confirm?token={make_review_token(issue_key, 'approve')}"
+    changes_url = (
+        f"{api_base_url}/review/confirm?token={make_review_token(issue_key, 'request_changes')}"
+    )
+    button_style = (
+        "display:inline-block;padding:10px 20px;margin-right:10px;border-radius:6px;"
+        "text-decoration:none;font:14px sans-serif;color:#fff"
+    )
+    return (
+        f"<p>"
+        f"<a href='{approve_url}' style='{button_style};background:#2e7d32'>Approve</a>"
+        f"<a href='{changes_url}' style='{button_style};background:#c62828'>Request Changes</a>"
+        f"</p>"
+    )
+
+
+def send_admin_review_email(
+    html_content: str,
+    pdf_path: Optional[str],
+    issue_date: str,
+    issue_key: str,
+    revision_number: int = 1,
+) -> bool:
+    """Send the admin a preview of a draft issue awaiting approve/request-changes."""
+    admin_email = os.environ.get("ADMIN_EMAIL", "")
+    if not admin_email:
+        print("[Email] ADMIN_EMAIL not set. Skipping admin review email.")
         return False
 
-    msg = MIMEMultipart("mixed")
-    msg["Subject"] = f"⚡ THE AI 7 — Your weekly AI intelligence brief · {issue_date}"
-    msg["From"]    = f"THE AI 7 <{sender}>"
-    msg["To"]      = recipient
+    revision_note = f" (revision {revision_number})" if revision_number > 1 else ""
+    subject = f"[REVIEW NEEDED] THE AI 7 · {issue_date}{revision_note}"
+    instructions = (
+        f"<p style='font:14px sans-serif;color:#555'>"
+        f"This is a draft awaiting your review. Tap a button below, or run the "
+        f"<code>review-newsletter</code> GitHub Actions workflow with "
+        f"<code>issue_key={issue_key}</code> and <code>decision=approve</code> to send it to "
+        f"subscribers, or <code>decision=request_changes</code> with feedback to regenerate it."
+        f"</p>"
+        f"{_review_action_buttons(issue_key)}"
+        f"<hr/>"
+    )
 
-    # HTML body
-    html_part = MIMEMultipart("alternative")
-    html_part.attach(MIMEText(html_content, "html", "utf-8"))
-    msg.attach(html_part)
+    return get_email_transport().send(
+        to=admin_email,
+        subject=subject,
+        html=instructions + html_content,
+        pdf_path=pdf_path,
+        pdf_filename=f"ai_dispatch_preview_{issue_key}.pdf" if pdf_path else None,
+    )
 
-    # PDF attachment (if generated)
-    if pdf_path and os.path.exists(pdf_path):
-        with open(pdf_path, "rb") as f:
-            pdf_data = f.read()
-        pdf_attach = MIMEApplication(pdf_data, _subtype="pdf")
-        pdf_attach.add_header("Content-Disposition", "attachment", filename=os.path.basename(pdf_path))
-        msg.attach(pdf_attach)
 
-    try:
-        print(f"[Email] Sending to {recipient}...")
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(sender, password)
-            server.sendmail(sender, recipient, msg.as_string())
-        print(f"[Email] Sent successfully to {recipient}")
-        return True
-    except smtplib.SMTPAuthenticationError:
-        print("[Email] Authentication failed. Check EMAIL_SENDER and EMAIL_PASSWORD (use a Gmail App Password).")
-        return False
-    except Exception as e:
-        print(f"[Email] Error: {e}")
-        return False
+def _unsubscribe_footer(recipient_email: str) -> str:
+    api_base_url = os.environ.get("API_BASE_URL", "").strip().rstrip("/")
+    if not api_base_url:
+        return ""
+
+    from api.security import make_unsubscribe_token
+
+    token = make_unsubscribe_token(recipient_email)
+    url = f"{api_base_url}/unsubscribe/confirm?token={token}"
+    return (
+        f"<p style='font:12px sans-serif;color:#999;margin-top:24px'>"
+        f"<a href='{url}' style='color:#999'>Unsubscribe</a>"
+        f"</p>"
+    )
+
+
+def send_to_subscriber(
+    html_content: str,
+    pdf_path: Optional[str],
+    issue_date: str,
+    recipient_email: str,
+) -> bool:
+    """Send the approved issue to one subscriber."""
+    subject = f"⚡ THE AI 7 — Your weekly AI intelligence brief · {issue_date}"
+    return get_email_transport().send(
+        to=recipient_email,
+        subject=subject,
+        html=html_content + _unsubscribe_footer(recipient_email),
+        pdf_path=pdf_path,
+    )

@@ -22,6 +22,14 @@ class WorkflowTracking:
     run_id: UUID
 
 
+@dataclass(frozen=True)
+class IssueLookup:
+    issue_id: UUID
+    status: str
+    thread_id: str
+    workflow_run_id: UUID
+
+
 def _trigger_type() -> str:
     value = os.getenv("WORKFLOW_TRIGGER", "local").strip().lower()
     if value not in VALID_TRIGGER_TYPES:
@@ -120,11 +128,16 @@ def begin_workflow_run(
 def complete_workflow_run(
     tracking: WorkflowTracking,
     *,
-    email_sent: bool,
+    admin_notified: bool,
     database_url: str | None = None,
 ) -> None:
-    """Mark the run complete and update the business issue status."""
-    issue_status = "sent" if email_sent else "generated"
+    """Mark the run complete and update the business issue status.
+
+    The issue moves to `reviewing` (awaiting the admin's approve/request-changes
+    decision) once notified, rather than being considered sent — sending to
+    subscribers now only happens after approval, via `graph/review.py`.
+    """
+    issue_status = "reviewing" if admin_notified else "generated"
     with database_connection(database_url) as connection:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -142,6 +155,51 @@ def complete_workflow_run(
                 WHERE id = %s
                 """,
                 (issue_status, tracking.issue_id),
+            )
+
+
+def get_issue_by_key(
+    issue_key: str,
+    *,
+    database_url: str | None = None,
+) -> IssueLookup | None:
+    """Look up an issue and its latest workflow run's checkpoint thread."""
+    with database_connection(database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT i.id, i.status, r.thread_id, r.id
+                FROM newsletter_issues i
+                JOIN workflow_runs r ON r.issue_id = i.id
+                WHERE i.issue_key = %s
+                ORDER BY r.started_at DESC
+                LIMIT 1
+                """,
+                (issue_key,),
+            )
+            row = cursor.fetchone()
+
+    if not row:
+        return None
+    return IssueLookup(issue_id=row[0], status=row[1], thread_id=row[2], workflow_run_id=row[3])
+
+
+def update_issue_status(
+    issue_id: UUID,
+    status: str,
+    *,
+    database_url: str | None = None,
+) -> None:
+    """Move a newsletter issue to a new status (e.g. approved, sent, failed)."""
+    with database_connection(database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE newsletter_issues
+                SET status = %s, updated_at = NOW()
+                WHERE id = %s
+                """,
+                (status, issue_id),
             )
 
 

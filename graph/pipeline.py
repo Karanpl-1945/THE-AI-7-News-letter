@@ -38,7 +38,9 @@ class NewsletterState(TypedDict):
     pdf_path:     Optional[str]
     html_object_key: Optional[str]
     pdf_object_key:  Optional[str]
-    email_sent:   bool
+    admin_notified: bool
+    editorial_feedback: Optional[str]
+    revision_number: int
     # Metadata
     issue_date:   str
     week_number:  int
@@ -46,6 +48,7 @@ class NewsletterState(TypedDict):
     issue_id:     str
     workflow_run_id: str
     thread_id:    str
+    issue_key:    str
 
 
 # ── NODE FUNCTIONS ────────────────────────────────────────
@@ -216,28 +219,34 @@ def node_publish(state: NewsletterState) -> NewsletterState:
     }
 
 
-@observe(name="email", as_type="tool")
-def node_email(state: NewsletterState) -> NewsletterState:
-    """Send the newspaper by email."""
-    from delivery.email_sender import send_newspaper
+@observe(name="notify_admin", as_type="tool")
+def node_notify_admin(state: NewsletterState, revision_number: int = 1) -> NewsletterState:
+    """Email the admin a preview and mark the issue as awaiting review."""
+    from delivery.email_sender import send_admin_review_email
 
-    print("\n[Pipeline] Step 8/8 — Sending email...")
+    print("\n[Pipeline] Step 8/8 — Notifying admin for review...")
     html_path, pdf_path = _ensure_local_artifacts(state)
-    sent = send_newspaper(state["html_content"], pdf_path, state["issue_date"])
+    notified = send_admin_review_email(
+        state["html_content"],
+        pdf_path,
+        state["issue_date"],
+        issue_key=state["issue_key"],
+        revision_number=revision_number,
+    )
     return {
         **state,
         "html_path": html_path,
         "pdf_path": pdf_path,
-        "email_sent": sent,
+        "admin_notified": notified,
     }
 
 
 def route_after_publish(state: NewsletterState) -> str:
-    """Skip delivery when generating a dry-run preview."""
+    """Skip the admin notification when generating a dry-run preview."""
     if state["dry_run"]:
-        print("\n[Pipeline] Step 8/8 — Dry run: email skipped.")
+        print("\n[Pipeline] Step 8/8 — Dry run: admin notification skipped.")
         return "finish"
-    return "email"
+    return "notify_admin"
 
 
 # ── BUILD GRAPH ───────────────────────────────────────────
@@ -252,8 +261,8 @@ def build_pipeline(checkpointer: BaseCheckpointSaver | None = None):
     graph.add_node("edit",      node_edit)
     graph.add_node("format",    node_format)
     graph.add_node("pdf",       node_pdf)
-    graph.add_node("publish",   node_publish)
-    graph.add_node("email",     node_email)
+    graph.add_node("publish",      node_publish)
+    graph.add_node("notify_admin", node_notify_admin)
 
     graph.set_entry_point("collect")
     graph.add_edge("collect",   "preselect")
@@ -265,9 +274,9 @@ def build_pipeline(checkpointer: BaseCheckpointSaver | None = None):
     graph.add_conditional_edges(
         "publish",
         route_after_publish,
-        {"email": "email", "finish": END},
+        {"notify_admin": "notify_admin", "finish": END},
     )
-    graph.add_edge("email",     END)
+    graph.add_edge("notify_admin", END)
 
     return graph.compile(checkpointer=checkpointer)
 
@@ -367,13 +376,16 @@ def run_pipeline(dry_run: bool = False, force: bool = False) -> NewsletterState:
         "pdf_path": None,
         "html_object_key": None,
         "pdf_object_key": None,
-        "email_sent": False,
+        "admin_notified": False,
+        "editorial_feedback": None,
+        "revision_number": 1,
         "issue_date":  now.strftime("%B %d, %Y"),
         "week_number": iso_week,
         "dry_run": dry_run,
         "issue_id": str(tracking.issue_id),
         "workflow_run_id": str(tracking.run_id),
         "thread_id": thread_id,
+        "issue_key": issue_key,
     }
 
     config = {"configurable": {"thread_id": thread_id}}
@@ -392,9 +404,9 @@ def run_pipeline(dry_run: bool = False, force: bool = False) -> NewsletterState:
             print(f"[Workflow] Could not record pipeline failure: {tracking_error}")
         raise
 
-    complete_workflow_run(tracking, email_sent=result["email_sent"])
+    complete_workflow_run(tracking, admin_notified=result["admin_notified"])
     print("\n" + "=" * 60)
-    print(f"  Done! Email sent: {result['email_sent']}")
+    print(f"  Done! Admin notified: {result['admin_notified']}")
     print(f"  PDF:  {result.get('pdf_path', 'N/A')}")
     print(f"  R2 PDF object: {result.get('pdf_object_key', 'N/A')}")
     print("=" * 60)

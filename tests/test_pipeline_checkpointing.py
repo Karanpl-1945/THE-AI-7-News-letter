@@ -11,7 +11,7 @@ from database.workflow_repository import WorkflowTracking
 from graph.pipeline import (
     build_thread_id,
     invoke_checkpointed_pipeline,
-    node_email,
+    node_notify_admin,
     node_publish,
     route_after_publish,
     run_pipeline,
@@ -36,6 +36,7 @@ class PublishNodeTests(unittest.TestCase):
             "issue_date": "July 16, 2026",
             "issue_id": str(self.issue_id),
             "workflow_run_id": str(self.run_id),
+            "issue_key": "2026-W29",
             "dry_run": True,
         }
 
@@ -136,14 +137,14 @@ class PublishNodeTests(unittest.TestCase):
 
         mock_reconcile.assert_not_called()
 
-    @patch("delivery.email_sender.send_newspaper")
+    @patch("delivery.email_sender.send_admin_review_email")
     @patch("formatter.pdf_generator.html_to_pdf")
     @patch("graph.pipeline._html_output_path")
-    def test_email_resume_restores_files_on_a_new_runner(
+    def test_notify_admin_resume_restores_files_on_a_new_runner(
         self,
         mock_html_output_path,
         mock_html_to_pdf,
-        mock_send_newspaper,
+        mock_send_admin_review_email,
     ):
         restored_html = Path(self.temporary_directory.name) / "email-restored.html"
         restored_pdf = Path(self.temporary_directory.name) / "email-restored.pdf"
@@ -154,7 +155,7 @@ class PublishNodeTests(unittest.TestCase):
             return str(restored_pdf)
 
         mock_html_to_pdf.side_effect = generate_pdf
-        mock_send_newspaper.return_value = True
+        mock_send_admin_review_email.return_value = True
         state = {
             **self.state,
             "html_path": "/old-runner/missing.html",
@@ -162,23 +163,25 @@ class PublishNodeTests(unittest.TestCase):
             "dry_run": False,
         }
 
-        result = node_email(state)
+        result = node_notify_admin(state)
 
-        mock_send_newspaper.assert_called_once_with(
+        mock_send_admin_review_email.assert_called_once_with(
             self.state["html_content"],
             str(restored_pdf),
             self.state["issue_date"],
+            issue_key=self.state["issue_key"],
+            revision_number=1,
         )
-        self.assertTrue(result["email_sent"])
+        self.assertTrue(result["admin_notified"])
         self.assertEqual(result["html_path"], str(restored_html))
 
-    def test_dry_run_publishes_but_skips_email(self):
+    def test_dry_run_publishes_but_skips_admin_notification(self):
         self.assertEqual(route_after_publish(self.state), "finish")
 
-    def test_normal_run_continues_to_email(self):
+    def test_normal_run_continues_to_notify_admin(self):
         self.assertEqual(
             route_after_publish({**self.state, "dry_run": False}),
-            "email",
+            "notify_admin",
         )
 
 
@@ -207,7 +210,7 @@ class CheckpointExecutionTests(unittest.TestCase):
 
     def test_new_thread_starts_with_initial_state(self):
         self.pipeline.get_state.return_value = MagicMock(values={}, next=())
-        expected = {**self.initial_state, "email_sent": False}
+        expected = {**self.initial_state, "admin_notified": False}
         self.pipeline.invoke.return_value = expected
 
         result = invoke_checkpointed_pipeline(
@@ -227,7 +230,7 @@ class CheckpointExecutionTests(unittest.TestCase):
             values={"issue_date": "July 15, 2026"},
             next=("summarize",),
         )
-        expected = {**self.initial_state, "email_sent": False}
+        expected = {**self.initial_state, "admin_notified": False}
         self.pipeline.invoke.return_value = expected
 
         result = invoke_checkpointed_pipeline(
@@ -240,7 +243,7 @@ class CheckpointExecutionTests(unittest.TestCase):
         self.assertEqual(result, expected)
 
     def test_completed_thread_reuses_saved_state(self):
-        saved = {"issue_date": "July 15, 2026", "email_sent": False}
+        saved = {"issue_date": "July 15, 2026", "admin_notified": False}
         self.pipeline.get_state.return_value = MagicMock(values=saved, next=())
 
         result = invoke_checkpointed_pipeline(
@@ -268,7 +271,7 @@ class CheckpointExecutionTests(unittest.TestCase):
             "pdf_path": "/old-runner/output/newsletter.pdf",
             "issue_id": str(issue_id),
             "workflow_run_id": str(run_id),
-            "email_sent": False,
+            "admin_notified": False,
         }
         self.pipeline.get_state.return_value = MagicMock(values=saved, next=())
         mock_ensure_local_artifacts.return_value = (
@@ -341,14 +344,14 @@ class WorkflowLifecycleTests(unittest.TestCase):
         mock_begin.return_value = self.tracking
         mock_postgres_checkpointer.return_value = self.checkpointer_context
         mock_build_pipeline.return_value = MagicMock()
-        mock_invoke.return_value = {"email_sent": False, "pdf_path": "output/test.pdf"}
+        mock_invoke.return_value = {"admin_notified": False, "pdf_path": "output/test.pdf"}
 
         result = run_pipeline(dry_run=True)
 
         initial_state = mock_invoke.call_args.args[1]
         self.assertEqual(initial_state["issue_id"], str(self.tracking.issue_id))
         self.assertEqual(initial_state["workflow_run_id"], str(self.tracking.run_id))
-        mock_complete.assert_called_once_with(self.tracking, email_sent=False)
+        mock_complete.assert_called_once_with(self.tracking, admin_notified=False)
         mock_fail.assert_not_called()
         self.assertEqual(result["pdf_path"], "output/test.pdf")
 
