@@ -1,0 +1,47 @@
+services:
+  - type: web
+    name: ai-newsletter-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: API_SIGNING_SECRET
+        sync: false
+      - key: API_BASE_URL
+        sync: false
+      - key: API_TOKEN_MAX_AGE_SECONDS
+        value: "259200"
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_CONNECT_TIMEOUT_SECONDS
+        value: "10"
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_SUMMARY_MODEL
+        value: llama-3.1-8b-instant
+      - key: GROQ_EDITOR_MODEL
+        value: llama-3.3-70b-versatile
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_NAME
+        sync: false
+      - key: EMAIL_SENDER
+        sync: false
+      - key: EMAIL_PASSWORD
+        sync: false
+      - key: EMAIL_TRANSPORT
+        value: gmail_smtp
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: LANGFUSE_PUBLIC_KEY
+        sync: false
+      - key: LANGFUSE_SECRET_KEY
+        sync: false
+      - key: LANGFUSE_BASE_URL
+        sync: false
