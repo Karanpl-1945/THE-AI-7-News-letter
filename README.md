@@ -1,12 +1,12 @@
 # ⚡ THE AI 7 — Your Weekly AI Intelligence Brief
 
-A fully automated weekly AI newspaper delivered to your inbox every Sunday, covering the latest in AI research, model releases, GitHub trends, and framework updates — powered by **Claude** and **LangGraph**.
+A fully automated AI newspaper delivered to your inbox, covering the latest in AI research, model releases, GitHub trends, and framework updates — powered by **Groq**, **LangGraph**, **PostgreSQL**, and **Cloudflare R2**, and scheduled via **GitHub Actions**.
 
 ---
 
 ## What You Get
 
-Every Sunday morning, a beautifully formatted newspaper lands in your inbox (HTML + PDF) with:
+Every scheduled run, a beautifully formatted newspaper lands in your inbox (HTML + PDF) with:
 
 | Section | What it contains |
 |---|---|
@@ -27,11 +27,16 @@ Every Sunday morning, a beautifully formatted newspaper lands in your inbox (HTM
 
 ## Architecture
 
+The production path is a **GitHub Actions cron** that runs `python main.py --dry-run` daily
+(see `.github/workflows/weekly-newsletter.yml`). `scheduler/runner.py` (APScheduler) still
+exists as an alternative way to run the pipeline continuously on your own machine, but it is
+not what the scheduled CI workflow uses.
+
 ```
-[APScheduler — Every Sunday]
+[GitHub Actions cron]  (or scheduler/runner.py locally)
          │
          ▼
-[Orchestrator — LangGraph Pipeline]
+[Orchestrator — LangGraph Pipeline, checkpointed per ISO week in PostgreSQL]
          │
    ┌─────┼──────────────────────────────┐
    ▼     ▼          ▼          ▼        ▼
@@ -40,19 +45,25 @@ Agent  Watcher   Tracker    Agent   Doc Agent
    └─────┼──────────────────────────────┘
          │  (parallel threads)
          ▼
-[Summarizer Agent]  ← Claude enriches each item
+[Preselector]        ← deterministic scoring/dedup/diversity caps, no LLM calls
          │
          ▼
-[Editor Agent]      ← Claude curates, ranks, writes features
+[Summarizer Agent]   ← Groq enriches each selected item
          │
          ▼
-[Formatter]         ← Jinja2 renders HTML newspaper
+[Editor Agent]       ← Groq curates, ranks, writes features
          │
          ▼
-[PDF Generator]     ← WeasyPrint converts HTML → PDF
+[Formatter]          ← Jinja2 renders HTML newspaper
          │
          ▼
-[Email Delivery]    ← Gmail SMTP sends to your inbox
+[PDF Generator]      ← WeasyPrint converts HTML → PDF
+         │
+         ▼
+[Publisher]          ← uploads HTML/PDF to Cloudflare R2, records in PostgreSQL
+         │
+         ▼
+[Email Delivery]     ← Gmail SMTP sends to your inbox (skipped on --dry-run)
 ```
 
 ### Agent Roles
@@ -60,17 +71,20 @@ Agent  Watcher   Tracker    Agent   Doc Agent
 | Agent | File | What it does |
 |---|---|---|
 | **Paper Agent** | `agents/paper_agent.py` | Fetches papers from ArXiv (`cs.AI`, `cs.LG`, `cs.CL`, `stat.ML`) and Papers With Code |
-| **Model Watcher** | `agents/model_watcher.py` | Monitors RSS feeds from OpenAI, Anthropic, Google, Meta, HuggingFace, Mistral |
+| **Model Watcher** | `agents/model_watcher.py` | Monitors RSS feeds from OpenAI, Anthropic, Google, Meta, HuggingFace, Mistral, Cohere |
 | **GitHub Tracker** | `agents/github_tracker.py` | Scrapes GitHub Trending + fetches new releases from watched repos |
-| **News Agent** | `agents/news_agent.py` | Parses RSS from The Batch, Import AI, MIT Tech Review, Reddit r/MachineLearning |
+| **News Agent** | `agents/news_agent.py` | Parses RSS feeds and community sources configured in `config/sources.yaml` |
 | **Framework Doc Agent** | `agents/framework_doc_agent.py` | Monitors LangChain, LangGraph, CrewAI, vLLM, Ollama, NeMo, and more for new releases |
-| **Summarizer** | `agents/summarizer.py` | Claude call per item → adds summary, why_it_matters, key_takeaway, difficulty |
-| **Editor** | `agents/editor.py` | Claude selects top stories, writes TL;DR, Paper of Week, Tool of Week, Glossary |
+| **Preselector** | `agents/preselector.py` | Deterministically dedupes and scores every item (freshness/relevance/credibility/completeness/activity/reproducibility) before any LLM call, applying per-category limits and per-source diversity caps from `config/sources.yaml` |
+| **Summarizer** | `agents/summarizer.py` | Groq call per selected item → adds summary, why_it_matters, key_takeaway, difficulty |
+| **Editor** | `agents/editor.py` | Groq selects top stories, writes TL;DR, Paper of Week, Tool of Week, Glossary |
 | **Formatter** | `formatter/formatter.py` | Jinja2 renders `newspaper.html` template with all curated content |
 | **PDF Generator** | `formatter/pdf_generator.py` | WeasyPrint converts HTML → PDF and saves to `output/` |
-| **Email Sender** | `delivery/email_sender.py` | Gmail SMTP sends HTML body + PDF attachment |
-| **Pipeline** | `graph/pipeline.py` | LangGraph StateGraph connecting all nodes in sequence |
-| **Scheduler** | `scheduler/runner.py` | APScheduler runs the pipeline every Sunday at configured time |
+| **Publisher** | `storage/artifact_service.py` + `storage/r2_client.py` | Uploads generated HTML/PDF to a private Cloudflare R2 bucket, reconciling against existing objects instead of blindly re-uploading |
+| **Email Sender** | `delivery/email_sender.py` | Gmail SMTP sends HTML body + PDF attachment to a single configured recipient |
+| **Pipeline** | `graph/pipeline.py` | LangGraph StateGraph connecting all nodes, checkpointed to PostgreSQL per ISO week (`database/checkpointer.py`) |
+| **Scheduler (GitHub Actions)** | `.github/workflows/weekly-newsletter.yml` | Cron-triggered CI workflow that runs the pipeline in `--dry-run` mode and uploads the HTML/PDF as a build artifact |
+| **Scheduler (local, alternative)** | `scheduler/runner.py` | APScheduler runs the pipeline on a configured day/time if you prefer to run it yourself instead of via CI |
 
 ---
 
@@ -82,27 +96,45 @@ ai-newspaper/
 │   ├── paper_agent.py          # ArXiv + Papers With Code
 │   ├── model_watcher.py        # AI company blog RSS feeds
 │   ├── github_tracker.py       # GitHub Trending + release watcher
-│   ├── news_agent.py           # AI news RSS + Reddit
+│   ├── news_agent.py           # AI news RSS + community sources
 │   ├── framework_doc_agent.py  # Framework release monitor
-│   ├── summarizer.py           # Claude enrichment per item
-│   └── editor.py               # Claude curation + features
+│   ├── preselector.py          # Deterministic scoring, dedup, diversity caps
+│   ├── summarizer.py           # Groq enrichment per selected item
+│   └── editor.py               # Groq curation + features
 ├── formatter/
 │   ├── formatter.py            # Jinja2 HTML renderer
 │   ├── pdf_generator.py        # HTML → PDF via WeasyPrint
 │   └── templates/
 │       └── newspaper.html      # Newspaper template (CSS + Jinja2)
 ├── graph/
-│   └── pipeline.py             # LangGraph StateGraph
+│   └── pipeline.py             # LangGraph StateGraph + checkpointed invocation
+├── database/
+│   ├── connection.py           # PostgreSQL connection boundary
+│   ├── migrate.py              # Schema migrator
+│   ├── checkpointer.py         # LangGraph PostgresSaver wrapper
+│   ├── summary_repository.py   # Content-hash keyed summary cache
+│   ├── workflow_repository.py  # Workflow-run tracking
+│   ├── artifact_repository.py  # R2 artifact bookkeeping
+│   └── migrations/*.sql        # Schema migrations
+├── storage/
+│   ├── r2_client.py            # Cloudflare R2 (S3-compatible) client
+│   └── artifact_service.py     # Reconcile-before-reupload publishing logic
+├── llm/
+│   └── groq_client.py          # Rate-limit-aware Groq request gateway
 ├── delivery/
 │   └── email_sender.py         # Gmail SMTP delivery
 ├── scheduler/
-│   └── runner.py               # APScheduler weekly trigger
+│   └── runner.py               # APScheduler local-runner alternative to GitHub Actions
 ├── config/
-│   └── sources.yaml            # All data sources, repos, RSS feeds
+│   └── sources.yaml            # Data sources, repos, RSS feeds, preselection weights
+├── .github/workflows/
+│   └── weekly-newsletter.yml   # Scheduled CI workflow (dry-run generation)
+├── observability.py             # Langfuse + Groq instrumentation
 ├── output/                     # Generated HTML + PDF files (auto-created)
+├── tests/                      # Unit tests (unittest / run with `python -m unittest`)
 ├── .env.example                # Template for secrets
 ├── requirements.txt
-└── main.py                     # Run once manually
+└── main.py                     # Run once manually (`--dry-run` skips email)
 ```
 
 ---
@@ -135,11 +167,14 @@ venv\Scripts\activate           # Windows
 > curl -Lsf https://astral.sh/uv/install.sh | sh
 > ```
 
-### 4. Get your API keys
+### 4. Get your API keys and services
 
 | Key | Where to get it | Cost |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com) | ~₹35/month for weekly runs |
+| `GROQ_API_KEY` | [console.groq.com](https://console.groq.com) | Free tier available |
+| `DATABASE_URL` | Any PostgreSQL provider (e.g. Neon, Supabase, local Postgres) | Free tier available |
+| `R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET_NAME` | Cloudflare dashboard → R2 → create a bucket + API token | Free tier available |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` | [cloud.langfuse.com](https://cloud.langfuse.com) | Free tier available |
 | `GITHUB_TOKEN` | [github.com/settings/tokens](https://github.com/settings/tokens) → Generate new token (classic) → no scopes needed | Free |
 | Gmail App Password | Google Account → Security → 2-Step Verification → App passwords | Free |
 
@@ -149,40 +184,41 @@ venv\Scripts\activate           # Windows
 cp .env.example .env
 ```
 
-Open `.env` and fill in:
+Open `.env` and fill in the values described in `.env.example` — Groq, PostgreSQL, Cloudflare
+R2, Langfuse, GitHub, Gmail, and personalisation settings all live there.
 
-```env
-ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxxxxxxxxxx
-GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx
-EMAIL_SENDER=yourgmail@gmail.com
-EMAIL_PASSWORD=xxxx xxxx xxxx xxxx    # 16-character App Password
-EMAIL_RECIPIENT=yourgmail@gmail.com
-
-USER_NAME=Your Name
-USER_INTERESTS=LLMs,agents,computer vision
-SKILL_LEVEL=intermediate              # beginner | intermediate | advanced
-
-SCHEDULE_DAY=sunday
-SCHEDULE_HOUR=8
-SCHEDULE_MINUTE=0
-```
-
-### 6. Test it once
+### 6. Initialize the database once
 
 ```bash
-python main.py
+python -m database.checkpointer
+python -m database.migrate
 ```
 
-This runs the full pipeline immediately and sends one newspaper to your inbox.
-Check the `output/` folder for the saved HTML and PDF files.
+### 7. Test it once
 
-### 7. Start the weekly automation
+```bash
+python main.py --dry-run
+```
+
+This runs the full pipeline immediately, generates HTML + PDF, uploads them to R2, and skips
+email. Check the `output/` folder for the saved files, then run without `--dry-run` once you're
+ready to actually send an email.
+
+### 8. Automate it
+
+The included `.github/workflows/weekly-newsletter.yml` runs the pipeline on a GitHub Actions
+cron schedule (currently daily at 8:00 AM IST, in `--dry-run` mode) — set the required secrets
+and variables in your repo settings and it runs without you keeping anything online yourself.
+
+If you'd rather run it continuously on your own machine instead of via CI, use the APScheduler
+alternative:
 
 ```bash
 python scheduler/runner.py
 ```
 
-Leave this running in the background. It will automatically trigger every Sunday at your configured time.
+Leave this running in the background — it triggers at the day/time configured via
+`SCHEDULE_DAY` / `SCHEDULE_HOUR` / `SCHEDULE_MINUTE` in `.env`.
 
 > **Tip for keeping it running:** Use `tmux` or `screen` so it survives terminal close:
 > ```bash
@@ -220,15 +256,20 @@ USER_INTERESTS=reinforcement learning,robotics,NLP
 SKILL_LEVEL=beginner
 ```
 
-Claude's summariser and editor will adapt their language and selections accordingly.
+Groq's summariser and editor will adapt their language and selections accordingly, and the
+`preselector` also uses `USER_INTERESTS` when scoring items for relevance.
 
-### Change delivery day/time
+### Change delivery day/time (local `scheduler/runner.py` only)
 
 ```env
 SCHEDULE_DAY=saturday
 SCHEDULE_HOUR=9
 SCHEDULE_MINUTE=30
 ```
+
+This only affects the APScheduler-based local runner. If you're using the GitHub Actions
+workflow instead, change the `cron:` line in `.github/workflows/weekly-newsletter.yml` (schedule
+times there are in UTC).
 
 ---
 
@@ -237,10 +278,12 @@ SCHEDULE_MINUTE=30
 LangGraph treats the newspaper as a **state machine**. Each node is a Python function that receives the full state dictionary, does its work, and returns an updated state. The state flows through nodes in sequence:
 
 ```
-collect → summarize → edit → format → pdf → email → END
+collect → preselect → summarize → edit → format → pdf → publish → email → END
 ```
 
-The `collect` node runs all 5 data agents in **parallel threads** using `concurrent.futures`, so fetching takes the time of the slowest agent, not the sum of all agents.
+(`email` is skipped and the graph ends after `publish` when running with `--dry-run`.)
+
+The `collect` node runs all 5 data agents in **parallel threads** using `concurrent.futures`, so fetching takes the time of the slowest agent, not the sum of all agents. The pipeline is checkpointed to PostgreSQL per ISO week (`database/checkpointer.py`), so a failed or interrupted run resumes from the last completed node instead of starting over, and a completed week's run is reused rather than regenerated.
 
 You can visualise the graph by adding this to `graph/pipeline.py`:
 
@@ -255,11 +298,14 @@ print(pipeline.get_graph().draw_ascii())
 
 | Item | Cost |
 |---|---|
-| Claude API (weekly run, ~20-30 items) | ~$0.05–0.15 per run |
-| **Monthly (4 runs)** | **~$0.20–0.60 / month** |
+| Groq API (run, ~20-30 items) | Free tier covers typical usage |
+| PostgreSQL (Neon/Supabase free tier) | Free |
+| Cloudflare R2 storage | Free tier covers typical usage |
+| Langfuse observability | Free tier |
 | GitHub API | Free |
 | ArXiv, RSS, Papers With Code | Free |
 | Gmail SMTP | Free |
+| GitHub Actions minutes | Free tier covers a daily run comfortably |
 
 ---
 
@@ -267,12 +313,15 @@ print(pipeline.get_graph().draw_ascii())
 
 | Problem | Fix |
 |---|---|
+| `[Error] Missing environment variables: ...` | Make sure `.env` exists and includes `GROQ_API_KEY`, `DATABASE_URL`, and all `R2_*` keys (plus `EMAIL_SENDER`/`EMAIL_PASSWORD` when not using `--dry-run`) |
 | `EMAIL_SENDER or EMAIL_PASSWORD not set` | Make sure `.env` file exists and `load_dotenv()` ran |
 | Gmail authentication failed | Use an **App Password**, not your regular Gmail password. Enable 2FA first. |
 | WeasyPrint install error | Install system Pango libraries (see Step 3 above) |
 | GitHub API rate limit | Add `GITHUB_TOKEN` to `.env` (raises limit from 60 to 5000 req/hour) |
 | No papers found | Check your internet connection; ArXiv may be temporarily slow |
 | PDF is blank/broken | Some WeasyPrint versions need `libpangoft2`. Run `sudo apt install libpangoft2-1.0-0` |
+| `[Database] Connection failed` | Check `DATABASE_URL` and run `python -m database.migrate` again |
+| `[R2] Connection failed` | Check the `R2_*` credentials and that the bucket exists |
 
 ---
 
@@ -283,9 +332,15 @@ Since this project is built for learning, here's what each component teaches:
 | Component | Concepts you learn |
 |---|---|
 | `agents/paper_agent.py` | Working with APIs, data parsing, deduplication |
-| `agents/summarizer.py` | Prompt engineering, Claude API, JSON structured output |
+| `agents/preselector.py` | Deterministic scoring/ranking, dedup heuristics, diversity constraints |
+| `agents/summarizer.py` | Prompt engineering, Groq API, JSON structured output |
 | `agents/editor.py` | Multi-step LLM reasoning, chained prompts |
-| `graph/pipeline.py` | LangGraph StateGraph, typed state, agent orchestration |
+| `graph/pipeline.py` | LangGraph StateGraph, typed state, agent orchestration, checkpointing |
+| `database/` | PostgreSQL schema design, migrations, LangGraph checkpointer integration |
+| `storage/` | S3-compatible object storage, idempotent publish/reconcile logic |
+| `llm/groq_client.py` | Rate limiting, exponential backoff, quota handling |
+| `observability.py` | LLM tracing with Langfuse |
 | `formatter/templates/newspaper.html` | Jinja2 templating, CSS layout, print-friendly design |
 | `delivery/email_sender.py` | MIME email, SMTP, file attachments |
-| `scheduler/runner.py` | APScheduler, cron triggers, background automation |
+| `.github/workflows/weekly-newsletter.yml` | GitHub Actions cron scheduling, CI secrets/variables |
+| `scheduler/runner.py` | APScheduler, cron triggers, background automation (local alternative) |
