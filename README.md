@@ -9,22 +9,15 @@ research, model releases, GitHub trends, and framework updates — powered by **
 
 ## What You Get
 
-Every Sunday, a beautifully formatted newspaper is generated (HTML + PDF) with:
+Every Sunday, a 5-page newspaper is generated (HTML + PDF), one section building on the last:
 
-| Section | What it contains |
+| Page | Sections |
 |---|---|
-| ⚡ TL;DR | 5 bullet summary of the entire week |
-| 🏆 Editor's Pick | Single most important story, with why it matters |
-| 📄 Research Papers | Top 5 ArXiv papers with difficulty rating & summaries |
-| 🤖 Model Releases | New models from OpenAI, Anthropic, Google, Meta, HuggingFace |
-| 📌 Paper of the Week | One paper explained in full depth (problem → approach → results → implications) |
-| ⭐ GitHub Trending | Top repos gaining stars this week in AI/ML |
-| ⚙️ Framework Updates | New releases of LangChain, LangGraph, CrewAI, vLLM, Ollama, etc. |
-| 🛠️ Tool of the Week | Deep dive into one tool with install command + quickstart code |
-| 📰 AI News | Top stories from AI companies, blogs, and community sources |
-| 🔥 Trending Topics | Tag cloud of buzzwords dominating the week |
-| 📚 Learning Paths | "Read these to understand this week's big topics" |
-| 🔤 Glossary | New terms introduced this week, explained simply |
+| **1 — Open** | Masthead, ⚡ TL;DR (5 bullets), 📌 **Paper of the Week** — the week's top paper in full: problem → approach → results → why it matters → one-line takeaway |
+| **2 — Research** | 📄 Top Research Papers (3-4 full write-ups: difficulty badge, summary, why it matters, takeaway), 🔭 Research Radar — one-liners on other papers worth knowing about |
+| **3 — Tooling & Infrastructure** | ⭐ GitHub Trending, ⚙️ Framework & Tool Updates, 🧩 Emerging Patterns & Infra — new RAG/retrieval/vector-DB techniques, when genuinely found that week |
+| **4 — Applied** | 🤖 New Models & Releases, 🛠 Production Playbook — one real-world build or postmortem, 🔧 **Tool of the Week** — install command + quickstart, only shown when genuinely populated |
+| **5 — Extras** | 🔍 Under the Radar (one non-obvious pick + reasoning), ⚡ Quick Hits (3-5 one-liners), then 🔥 Trending Topics / 🔤 Glossary / 📚 Learning Paths — best-effort, so their occasional absence never reads as broken |
 
 An admin reviews every draft before it ships — approving it, or sending it back with feedback
 for another pass — and only approved issues ever reach subscribers.
@@ -86,8 +79,8 @@ into its prompt, and the whole exchange is traced end-to-end in Langfuse.
 | **News Agent** | `agents/news_agent.py` | Parses RSS feeds and community sources configured in `config/sources.yaml` |
 | **Framework Doc Agent** | `agents/framework_doc_agent.py` | Monitors LangChain, LangGraph, CrewAI, vLLM, Ollama, NeMo, and more for new releases |
 | **Preselector** | `agents/preselector.py` | Deterministically dedupes and scores every item before any LLM call, applying per-category limits and per-source diversity caps |
-| **Summarizer** | `agents/summarizer.py` | Groq call per selected item → summary, why_it_matters, key_takeaway, difficulty (cached by content hash) |
-| **Editor** | `agents/editor.py` | Groq selects top stories, writes TL;DR/features/glossary; incorporates admin feedback on a revision |
+| **Summarizer** | `agents/summarizer.py` | Groq call per selected item → summary, why_it_matters, key_takeaway, difficulty (cached by content hash); a failed call falls back to a cleaned, Markdown-stripped excerpt — never raw changelog syntax |
+| **Editor** | `agents/editor.py` | Two independent Groq calls: a **core** call for must-have content (TL;DR, Paper of the Week, Tool of the Week) and a separate **extras** call (Research Radar, Emerging Patterns, Production Playbook, Under the Radar, Quick Hits, Trending/Glossary/Learning) — a failure in one never blanks out the other. Extras are built from already-collected items that didn't make each category's top-N cut, at no extra Groq cost. Incorporates admin feedback into the core call on a revision. |
 | **Formatter / PDF** | `formatter/` | Jinja2 renders the newspaper, WeasyPrint converts it to PDF |
 | **Publisher** | `storage/artifact_service.py` + `storage/r2_client.py` | Uploads HTML/PDF to a private R2 bucket, reconciling instead of blindly re-uploading |
 | **Notify Admin** | `graph/pipeline.py::node_notify_admin` | Emails the admin a preview with one-tap review buttons (when the API is deployed) |
@@ -369,8 +362,8 @@ Since this project is built for learning, here's what each component teaches:
 | Component | Concepts you learn |
 |---|---|
 | `agents/preselector.py` | Deterministic scoring/ranking, dedup heuristics, diversity constraints |
-| `agents/summarizer.py` | Prompt engineering, Groq API, JSON structured output, content-hash caching |
-| `agents/editor.py` | Multi-step LLM reasoning, feedback-conditioned regeneration |
+| `agents/summarizer.py` | Prompt engineering, Groq API, JSON structured output, content-hash caching, graceful-degradation fallback design |
+| `agents/editor.py` | Multi-step LLM reasoning, feedback-conditioned regeneration, splitting calls to isolate blast radius on failure |
 | `graph/pipeline.py` | LangGraph StateGraph, cycles, `interrupt()`/`Command` human-in-the-loop |
 | `graph/review.py` | Resuming a paused graph safely, idempotent retry design |
 | `database/` | PostgreSQL schema design, migrations, LangGraph checkpointer integration |
