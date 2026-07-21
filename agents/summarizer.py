@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import re
 from typing import List, Dict, Any
 
 from langfuse import observe
@@ -98,10 +99,40 @@ def _validate_summary(data: Dict[str, Any]) -> None:
         raise ValueError("Groq summary response tags must be a list")
 
 
+def _strip_markdown(text: str) -> str:
+    """Remove Markdown syntax so a raw changelog reads as prose, not source."""
+    text = re.sub(r"```.*?```", " ", text, flags=re.DOTALL)
+    text = re.sub(r"`([^`]*)`", r"\1", text)
+    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
+    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+    text = re.sub(r"\*([^*]+)\*", r"\1", text)
+    text = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _truncate_at_boundary(text: str, limit: int) -> str:
+    """Cut at a sentence or word boundary instead of mid-word/mid-sentence."""
+    if len(text) <= limit:
+        return text
+
+    truncated = text[:limit]
+    for separator in (". ", "! ", "? "):
+        index = truncated.rfind(separator)
+        if index > limit * 0.4:
+            return truncated[: index + 1].strip()
+
+    index = truncated.rfind(" ")
+    if index > 0:
+        return truncated[:index].strip() + "…"
+    return truncated.strip() + "…"
+
+
 def _fallback_summary(item: Dict[str, Any]) -> Dict[str, Any]:
+    cleaned = _strip_markdown(_raw_content(item))
     return {
         **item,
-        "summary": _raw_content(item)[:300],
+        "summary": _truncate_at_boundary(cleaned, 300),
         "why_it_matters": "",
         "key_takeaway": "",
         "difficulty": "Intermediate",

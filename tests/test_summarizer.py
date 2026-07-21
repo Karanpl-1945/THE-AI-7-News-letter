@@ -3,8 +3,60 @@ import unittest
 from unittest.mock import MagicMock, Mock, patch
 from uuid import uuid4
 
-from agents.summarizer import _summarize_item, summarize_items
+from agents.summarizer import (
+    _fallback_summary,
+    _strip_markdown,
+    _summarize_item,
+    _truncate_at_boundary,
+    summarize_items,
+)
 from llm.groq_client import GroqQuotaExhaustedError
+
+
+class FallbackSummaryTextTests(unittest.TestCase):
+    def test_strip_markdown_removes_headers_code_and_links(self):
+        raw = (
+            "## Verify Docker Image Signature\n\n"
+            "All images are signed with [cosign](https://docs.sigstore.dev). "
+            "Run `cosign verify` first.\n\n"
+            "```bash\ncosign verify --key cosign.pub image:tag\n```\n\n"
+            "This confirms the release is authentic."
+        )
+
+        cleaned = _strip_markdown(raw)
+
+        self.assertNotIn("##", cleaned)
+        self.assertNotIn("```", cleaned)
+        self.assertNotIn("[cosign]", cleaned)
+        self.assertNotIn("cosign verify --key", cleaned)
+        self.assertIn("cosign verify", cleaned)
+        self.assertIn("This confirms the release is authentic.", cleaned)
+
+    def test_truncate_at_boundary_cuts_on_a_sentence_not_mid_word(self):
+        text = "First sentence is here. Second sentence goes on for a while longer than the limit."
+
+        truncated = _truncate_at_boundary(text, 30)
+
+        self.assertEqual(truncated, "First sentence is here.")
+
+    def test_truncate_at_boundary_falls_back_to_word_boundary(self):
+        text = ("onelongwordthatkeepsgoing " * 5).strip()
+
+        truncated = _truncate_at_boundary(text, 20)
+
+        self.assertTrue(truncated.endswith("…"))
+
+    def test_fallback_summary_never_leaks_raw_markdown(self):
+        item = {
+            "title": "some/repo — v1.0.0",
+            "changelog": "## What's Changed\n\n- Fixed a bug in `parser.py` (#123)\n\n"
+            "```python\nraise ValueError('bad')\n```",
+        }
+
+        result = _fallback_summary(item)
+
+        self.assertNotIn("##", result["summary"])
+        self.assertNotIn("```", result["summary"])
 
 
 class SummarizerTests(unittest.TestCase):
