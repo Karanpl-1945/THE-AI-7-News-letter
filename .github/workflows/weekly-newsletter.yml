@@ -1,9 +1,9 @@
 name: Weekly newsletter generation
 
 on:
-  # Daily at 8:00 AM IST (02:30 UTC).
+  # Weekly, Sundays at 8:00 AM IST (02:30 UTC Sunday).
   schedule:
-    - cron: "30 2 * * *"
+    - cron: "30 2 * * 0"
   workflow_dispatch:
     inputs:
       force_new_run:
