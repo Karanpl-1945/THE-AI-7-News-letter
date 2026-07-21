@@ -22,6 +22,16 @@ class SubscribeEndpointTests(unittest.TestCase):
         self.env_patch.start()
         self.addCleanup(self.env_patch.stop)
 
+    def test_subscribe_page_renders_a_form_without_mutating_state(self):
+        with patch("api.routers.subscribers.add_subscriber") as mock_add:
+            response = self.client.get("/subscribe")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Subscribe to THE AI 7", response.text)
+        self.assertIn('type="email"', response.text)
+        self.assertIn("fetch(\"/subscribe\"", response.text)  # posts to the JSON endpoint
+        mock_add.assert_not_called()
+
     @patch("api.routers.subscribers.add_subscriber")
     def test_subscribe_with_valid_email(self, mock_add):
         mock_add.return_value = SubscriberRecord(
