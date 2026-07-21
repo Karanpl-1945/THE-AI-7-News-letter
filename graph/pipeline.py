@@ -8,6 +8,7 @@ from uuid import UUID
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import StateGraph, END
+from langgraph.types import interrupt
 from langfuse import observe
 
 
@@ -41,6 +42,8 @@ class NewsletterState(TypedDict):
     admin_notified: bool
     editorial_feedback: Optional[str]
     revision_number: int
+    review_decision: Optional[str]
+    send_result: Optional[Dict[str, Any]]
     # Metadata
     issue_date:   str
     week_number:  int
@@ -220,8 +223,14 @@ def node_publish(state: NewsletterState) -> NewsletterState:
 
 
 @observe(name="notify_admin", as_type="tool")
-def node_notify_admin(state: NewsletterState, revision_number: int = 1) -> NewsletterState:
-    """Email the admin a preview and mark the issue as awaiting review."""
+def node_notify_admin(state: NewsletterState) -> NewsletterState:
+    """Email the admin a preview and mark the issue as awaiting review.
+
+    Reads `revision_number` from state rather than taking it as a parameter —
+    LangGraph only ever calls node functions with the single state argument,
+    so this node needs to be self-contained to work when the graph itself
+    (re-)invokes it via the approval → edit → ... → notify_admin loop.
+    """
     from delivery.email_sender import send_admin_review_email
 
     print("\n[Pipeline] Step 8/8 — Notifying admin for review...")
@@ -231,7 +240,7 @@ def node_notify_admin(state: NewsletterState, revision_number: int = 1) -> Newsl
         pdf_path,
         state["issue_date"],
         issue_key=state["issue_key"],
-        revision_number=revision_number,
+        revision_number=state.get("revision_number", 1),
     )
     return {
         **state,
@@ -249,6 +258,44 @@ def route_after_publish(state: NewsletterState) -> str:
     return "notify_admin"
 
 
+@observe(name="approval", as_type="tool")
+def node_approval(state: NewsletterState) -> NewsletterState:
+    """Pause the graph here until the admin resumes with a decision.
+
+    `interrupt()` suspends execution and checkpoints the graph at this exact
+    point; resuming with `Command(resume={"decision": ..., "feedback": ...})`
+    re-enters this node with that payload as the return value.
+    """
+    print("\n[Pipeline] Awaiting admin decision (approve / request_changes)...")
+    payload = interrupt({"issue_key": state["issue_key"]})
+    decision = payload["decision"]
+    updates: Dict[str, Any] = {
+        "review_decision": decision,
+        "editorial_feedback": payload.get("feedback"),
+    }
+    if decision == "request_changes":
+        updates["revision_number"] = state.get("revision_number", 1) + 1
+    return {**state, **updates}
+
+
+def route_after_approval(state: NewsletterState) -> str:
+    """Approve moves on to sending; request_changes loops back to the editor."""
+    if state["review_decision"] == "approve":
+        return "send"
+    return "edit"
+
+
+@observe(name="send", as_type="tool")
+def node_send(state: NewsletterState) -> NewsletterState:
+    """Deliver the approved issue to every active subscriber."""
+    from delivery.broadcast import send_to_subscribers
+
+    print("\n[Pipeline] Sending to subscribers...")
+    result = send_to_subscribers(state, UUID(state["issue_id"]))
+    print(f"  Sent: {result['sent']} | Failed: {result['failed']} | Skipped: {result['skipped']}")
+    return {**state, "send_result": result}
+
+
 # ── BUILD GRAPH ───────────────────────────────────────────
 
 def build_pipeline(checkpointer: BaseCheckpointSaver | None = None):
@@ -263,6 +310,8 @@ def build_pipeline(checkpointer: BaseCheckpointSaver | None = None):
     graph.add_node("pdf",       node_pdf)
     graph.add_node("publish",      node_publish)
     graph.add_node("notify_admin", node_notify_admin)
+    graph.add_node("approval",     node_approval)
+    graph.add_node("send",         node_send)
 
     graph.set_entry_point("collect")
     graph.add_edge("collect",   "preselect")
@@ -276,7 +325,13 @@ def build_pipeline(checkpointer: BaseCheckpointSaver | None = None):
         route_after_publish,
         {"notify_admin": "notify_admin", "finish": END},
     )
-    graph.add_edge("notify_admin", END)
+    graph.add_edge("notify_admin", "approval")
+    graph.add_conditional_edges(
+        "approval",
+        route_after_approval,
+        {"send": "send", "edit": "edit"},
+    )
+    graph.add_edge("send", END)
 
     return graph.compile(checkpointer=checkpointer)
 
@@ -379,6 +434,8 @@ def run_pipeline(dry_run: bool = False, force: bool = False) -> NewsletterState:
         "admin_notified": False,
         "editorial_feedback": None,
         "revision_number": 1,
+        "review_decision": None,
+        "send_result": None,
         "issue_date":  now.strftime("%B %d, %Y"),
         "week_number": iso_week,
         "dry_run": dry_run,

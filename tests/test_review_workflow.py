@@ -1,6 +1,5 @@
-"""Tests for applying an admin's approve/request-changes decision."""
+"""Tests for resuming the paused pipeline graph with an admin's decision."""
 
-from dataclasses import replace
 import unittest
 from unittest.mock import MagicMock, patch
 from uuid import UUID
@@ -23,6 +22,13 @@ def _checkpointer_context():
     return context
 
 
+def _snapshot(next_nodes, values=None):
+    snapshot = MagicMock()
+    snapshot.next = next_nodes
+    snapshot.values = values or {}
+    return snapshot
+
+
 class ReviewDecisionTests(unittest.TestCase):
     def test_request_changes_without_feedback_is_rejected(self):
         with self.assertRaisesRegex(ReviewError, "feedback is required"):
@@ -40,8 +46,17 @@ class ReviewDecisionTests(unittest.TestCase):
             handle_review_decision("2026-W99", "approve")
 
     @patch("database.workflow_repository.get_issue_by_key")
-    def test_issue_not_awaiting_review_is_rejected(self, mock_get_issue):
-        mock_get_issue.return_value = replace(ISSUE, status="sent")
+    @patch("database.checkpointer.postgres_checkpointer")
+    @patch("graph.review.build_pipeline")
+    def test_issue_not_paused_at_approval_is_rejected(
+        self, mock_build_pipeline, mock_postgres_checkpointer, mock_get_issue
+    ):
+        """The graph's own paused position gates the decision, not a status flag."""
+        mock_get_issue.return_value = ISSUE
+        mock_postgres_checkpointer.return_value = _checkpointer_context()
+        pipeline = MagicMock()
+        pipeline.get_state.return_value = _snapshot(next_nodes=())  # already at END
+        mock_build_pipeline.return_value = pipeline
 
         with self.assertRaisesRegex(ReviewError, "not awaiting review"):
             handle_review_decision("2026-W29", "approve")
@@ -49,14 +64,12 @@ class ReviewDecisionTests(unittest.TestCase):
     @patch("database.workflow_repository.update_issue_status")
     @patch("database.workflow_repository.get_issue_by_key")
     @patch("database.review_repository.record_approval_decision")
-    @patch("delivery.broadcast.send_to_subscribers")
     @patch("database.checkpointer.postgres_checkpointer")
     @patch("graph.review.build_pipeline")
-    def test_approve_broadcasts_and_marks_sent(
+    def test_approve_resumes_the_graph_and_marks_sent(
         self,
         mock_build_pipeline,
         mock_postgres_checkpointer,
-        mock_broadcast,
         mock_record_approval,
         mock_get_issue,
         mock_update_status,
@@ -64,31 +77,34 @@ class ReviewDecisionTests(unittest.TestCase):
         mock_get_issue.return_value = ISSUE
         mock_postgres_checkpointer.return_value = _checkpointer_context()
         pipeline = MagicMock()
-        pipeline.get_state.return_value = MagicMock(
-            values={"html_content": "<html></html>", "issue_date": "July 20, 2026"}
-        )
+        pipeline.get_state.side_effect = [
+            _snapshot(next_nodes=("approval",), values={"revision_number": 1}),
+            _snapshot(next_nodes=()),  # reached END via "send"
+        ]
+        pipeline.invoke.return_value = {
+            "send_result": {"sent": 3, "failed": 0, "skipped": 1},
+        }
         mock_build_pipeline.return_value = pipeline
-        mock_broadcast.return_value = {"sent": 3, "failed": 0, "skipped": 1}
 
         result = handle_review_decision("2026-W29", "approve")
 
+        resume_arg = pipeline.invoke.call_args.args[0]
+        self.assertEqual(resume_arg.resume, {"decision": "approve", "feedback": None})
         mock_record_approval.assert_called_once()
         self.assertEqual(mock_record_approval.call_args.kwargs["decision"], "approved")
-        mock_update_status.assert_any_call(ISSUE.issue_id, "approved")
-        mock_update_status.assert_called_with(ISSUE.issue_id, "sent")
+        mock_update_status.assert_called_once_with(ISSUE.issue_id, "sent")
         self.assertEqual(result["status"], "sent")
+        self.assertEqual(result["sent"], 3)
 
     @patch("database.workflow_repository.update_issue_status")
     @patch("database.workflow_repository.get_issue_by_key")
     @patch("database.review_repository.record_approval_decision")
-    @patch("delivery.broadcast.send_to_subscribers")
     @patch("database.checkpointer.postgres_checkpointer")
     @patch("graph.review.build_pipeline")
     def test_approve_with_zero_successful_sends_marks_failed(
         self,
         mock_build_pipeline,
         mock_postgres_checkpointer,
-        mock_broadcast,
         mock_record_approval,
         mock_get_issue,
         mock_update_status,
@@ -96,72 +112,141 @@ class ReviewDecisionTests(unittest.TestCase):
         mock_get_issue.return_value = ISSUE
         mock_postgres_checkpointer.return_value = _checkpointer_context()
         pipeline = MagicMock()
-        pipeline.get_state.return_value = MagicMock(
-            values={"html_content": "<html></html>", "issue_date": "July 20, 2026"}
-        )
+        pipeline.get_state.side_effect = [
+            _snapshot(next_nodes=("approval",), values={"revision_number": 1}),
+            _snapshot(next_nodes=()),
+        ]
+        pipeline.invoke.return_value = {
+            "send_result": {"sent": 0, "failed": 2, "skipped": 0},
+        }
         mock_build_pipeline.return_value = pipeline
-        mock_broadcast.return_value = {"sent": 0, "failed": 2, "skipped": 0}
 
         result = handle_review_decision("2026-W29", "approve")
 
         self.assertEqual(result["status"], "failed")
 
-    @patch("graph.review.node_notify_admin")
-    @patch("graph.review.node_publish")
-    @patch("graph.review.node_pdf")
-    @patch("graph.review.node_format")
-    @patch("graph.review.node_edit")
     @patch("database.workflow_repository.update_issue_status")
     @patch("database.workflow_repository.get_issue_by_key")
     @patch("database.review_repository.record_approval_decision")
     @patch("database.checkpointer.postgres_checkpointer")
     @patch("graph.review.build_pipeline")
-    def test_request_changes_regenerates_editor_and_stays_reviewing(
+    def test_approve_with_no_subscribers_stays_approved_not_sent(
         self,
         mock_build_pipeline,
         mock_postgres_checkpointer,
         mock_record_approval,
         mock_get_issue,
         mock_update_status,
-        mock_node_edit,
-        mock_node_format,
-        mock_node_pdf,
-        mock_node_publish,
-        mock_node_notify_admin,
+    ):
+        """Nobody to deliver to is not the same as a successful send."""
+        mock_get_issue.return_value = ISSUE
+        mock_postgres_checkpointer.return_value = _checkpointer_context()
+        pipeline = MagicMock()
+        pipeline.get_state.side_effect = [
+            _snapshot(next_nodes=("approval",), values={"revision_number": 1}),
+            _snapshot(next_nodes=()),
+        ]
+        pipeline.invoke.return_value = {
+            "send_result": {"sent": 0, "failed": 0, "skipped": 0},
+        }
+        mock_build_pipeline.return_value = pipeline
+
+        result = handle_review_decision("2026-W29", "approve")
+
+        self.assertEqual(result["status"], "approved")
+
+    @patch("database.workflow_repository.update_issue_status")
+    @patch("database.workflow_repository.get_issue_by_key")
+    @patch("delivery.broadcast.send_to_subscribers")
+    @patch("database.checkpointer.postgres_checkpointer")
+    @patch("graph.review.build_pipeline")
+    def test_reapproving_a_finished_issue_retries_the_send_directly(
+        self,
+        mock_build_pipeline,
+        mock_postgres_checkpointer,
+        mock_send,
+        mock_get_issue,
+        mock_update_status,
+    ):
+        """No pending interrupt to resume — retry delivery without touching the graph."""
+        mock_get_issue.return_value = ISSUE
+        mock_postgres_checkpointer.return_value = _checkpointer_context()
+        pipeline = MagicMock()
+        pipeline.get_state.return_value = _snapshot(
+            next_nodes=(),
+            values={"review_decision": "approve", "html_content": "<html></html>"},
+        )
+        mock_build_pipeline.return_value = pipeline
+        mock_send.return_value = {"sent": 1, "failed": 0, "skipped": 2}
+
+        result = handle_review_decision("2026-W29", "approve")
+
+        mock_send.assert_called_once()
+        pipeline.invoke.assert_not_called()  # no graph resume for a retry
+        mock_update_status.assert_called_once_with(ISSUE.issue_id, "sent")
+        self.assertTrue(result["retried"])
+        self.assertEqual(result["sent"], 1)
+
+    @patch("database.workflow_repository.get_issue_by_key")
+    @patch("database.checkpointer.postgres_checkpointer")
+    @patch("graph.review.build_pipeline")
+    def test_request_changes_is_rejected_once_the_issue_is_finished(
+        self, mock_build_pipeline, mock_postgres_checkpointer, mock_get_issue
     ):
         mock_get_issue.return_value = ISSUE
         mock_postgres_checkpointer.return_value = _checkpointer_context()
         pipeline = MagicMock()
-        base_state = {
-            "html_content": "<html></html>",
-            "issue_date": "July 20, 2026",
-            "revision_number": 1,
-        }
-        pipeline.get_state.return_value = MagicMock(values=base_state)
+        pipeline.get_state.return_value = _snapshot(
+            next_nodes=(), values={"review_decision": "approve"}
+        )
         mock_build_pipeline.return_value = pipeline
 
-        mock_node_edit.side_effect = lambda state: {**state, "edited": True}
-        mock_node_format.side_effect = lambda state: {**state, "formatted": True}
-        mock_node_pdf.side_effect = lambda state: {**state, "pdf": True}
-        mock_node_publish.side_effect = lambda state: {**state, "published": True}
-        mock_node_notify_admin.side_effect = lambda state, revision_number: {
-            **state,
+        with self.assertRaisesRegex(ReviewError, "not awaiting review"):
+            handle_review_decision("2026-W29", "request_changes", feedback="too late")
+
+    @patch("database.workflow_repository.update_issue_status")
+    @patch("database.workflow_repository.get_issue_by_key")
+    @patch("database.review_repository.record_approval_decision")
+    @patch("database.checkpointer.postgres_checkpointer")
+    @patch("graph.review.build_pipeline")
+    def test_request_changes_resumes_and_stays_reviewing(
+        self,
+        mock_build_pipeline,
+        mock_postgres_checkpointer,
+        mock_record_approval,
+        mock_get_issue,
+        mock_update_status,
+    ):
+        mock_get_issue.return_value = ISSUE
+        mock_postgres_checkpointer.return_value = _checkpointer_context()
+        pipeline = MagicMock()
+        pipeline.get_state.side_effect = [
+            _snapshot(next_nodes=("approval",), values={"revision_number": 1}),
+            _snapshot(next_nodes=("approval",)),  # looped back and paused again
+        ]
+        pipeline.invoke.return_value = {
+            "revision_number": 2,
             "admin_notified": True,
         }
+        mock_build_pipeline.return_value = pipeline
 
         result = handle_review_decision(
             "2026-W29", "request_changes", feedback="Shorten the TL;DR"
         )
 
-        edit_input = mock_node_edit.call_args.args[0]
-        self.assertEqual(edit_input["editorial_feedback"], "Shorten the TL;DR")
-        self.assertEqual(edit_input["revision_number"], 2)
-        mock_node_notify_admin.assert_called_once()
-        self.assertEqual(mock_node_notify_admin.call_args.kwargs["revision_number"], 2)
+        resume_arg = pipeline.invoke.call_args.args[0]
+        self.assertEqual(
+            resume_arg.resume,
+            {"decision": "request_changes", "feedback": "Shorten the TL;DR"},
+        )
+        mock_record_approval.assert_called_once()
+        self.assertEqual(
+            mock_record_approval.call_args.kwargs["decision"], "changes_requested"
+        )
+        self.assertEqual(mock_record_approval.call_args.kwargs["revision_number"], 2)
         mock_update_status.assert_called_once_with(ISSUE.issue_id, "reviewing")
         self.assertEqual(result["status"], "reviewing")
         self.assertEqual(result["revision_number"], 2)
-        pipeline.update_state.assert_called_once()
 
 
 if __name__ == "__main__":

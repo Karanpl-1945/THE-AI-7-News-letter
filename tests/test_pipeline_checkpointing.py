@@ -11,8 +11,11 @@ from database.workflow_repository import WorkflowTracking
 from graph.pipeline import (
     build_thread_id,
     invoke_checkpointed_pipeline,
+    node_approval,
     node_notify_admin,
     node_publish,
+    node_send,
+    route_after_approval,
     route_after_publish,
     run_pipeline,
 )
@@ -183,6 +186,65 @@ class PublishNodeTests(unittest.TestCase):
             route_after_publish({**self.state, "dry_run": False}),
             "notify_admin",
         )
+
+
+class ApprovalNodeTests(unittest.TestCase):
+    def setUp(self):
+        self.state = {
+            "issue_key": "2026-W29",
+            "issue_id": "12345678-1234-5678-1234-567812345678",
+            "revision_number": 1,
+            "html_content": "<html></html>",
+            "issue_date": "July 20, 2026",
+            "pdf_path": "output/newsletter.pdf",
+        }
+
+    @patch("graph.pipeline.interrupt")
+    def test_approve_leaves_revision_number_unchanged(self, mock_interrupt):
+        mock_interrupt.return_value = {"decision": "approve", "feedback": None}
+
+        result = node_approval(self.state)
+
+        mock_interrupt.assert_called_once_with({"issue_key": "2026-W29"})
+        self.assertEqual(result["review_decision"], "approve")
+        self.assertIsNone(result["editorial_feedback"])
+        self.assertEqual(result["revision_number"], 1)
+
+    @patch("graph.pipeline.interrupt")
+    def test_request_changes_bumps_revision_number_and_stores_feedback(self, mock_interrupt):
+        mock_interrupt.return_value = {
+            "decision": "request_changes",
+            "feedback": "Shorten the TL;DR",
+        }
+
+        result = node_approval(self.state)
+
+        self.assertEqual(result["review_decision"], "request_changes")
+        self.assertEqual(result["editorial_feedback"], "Shorten the TL;DR")
+        self.assertEqual(result["revision_number"], 2)
+
+    def test_route_after_approval_sends_on_approve(self):
+        self.assertEqual(
+            route_after_approval({**self.state, "review_decision": "approve"}),
+            "send",
+        )
+
+    def test_route_after_approval_loops_back_to_edit_on_request_changes(self):
+        self.assertEqual(
+            route_after_approval({**self.state, "review_decision": "request_changes"}),
+            "edit",
+        )
+
+    @patch("delivery.broadcast.send_to_subscribers")
+    def test_send_node_wraps_broadcast_and_stores_result(self, mock_send):
+        mock_send.return_value = {"sent": 2, "failed": 0, "skipped": 1}
+
+        result = node_send(self.state)
+
+        mock_send.assert_called_once_with(
+            self.state, UUID("12345678-1234-5678-1234-567812345678")
+        )
+        self.assertEqual(result["send_result"], {"sent": 2, "failed": 0, "skipped": 1})
 
 
 class ThreadIdTests(unittest.TestCase):
