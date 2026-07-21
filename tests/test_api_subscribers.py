@@ -32,8 +32,9 @@ class SubscribeEndpointTests(unittest.TestCase):
         self.assertIn("fetch(\"/subscribe\"", response.text)  # posts to the JSON endpoint
         mock_add.assert_not_called()
 
+    @patch("delivery.email_sender.send_welcome_email")
     @patch("api.routers.subscribers.add_subscriber")
-    def test_subscribe_with_valid_email(self, mock_add):
+    def test_subscribe_with_valid_email_sends_a_welcome(self, mock_add, mock_welcome):
         mock_add.return_value = SubscriberRecord(
             id=uuid4(), email="reader@example.com", status="active"
         )
@@ -43,6 +44,20 @@ class SubscribeEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "active")
         mock_add.assert_called_once_with("reader@example.com")
+        mock_welcome.assert_called_once_with("reader@example.com")
+
+    @patch("delivery.email_sender.send_welcome_email")
+    @patch("api.routers.subscribers.add_subscriber")
+    def test_subscribe_succeeds_even_if_the_welcome_email_fails(self, mock_add, mock_welcome):
+        mock_add.return_value = SubscriberRecord(
+            id=uuid4(), email="reader@example.com", status="active"
+        )
+        mock_welcome.side_effect = RuntimeError("SMTP unavailable")
+
+        response = self.client.post("/subscribe", json={"email": "reader@example.com"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "active")
 
     @patch("api.routers.subscribers.add_subscriber")
     def test_subscribe_with_invalid_email_is_rejected(self, mock_add):

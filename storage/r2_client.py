@@ -77,6 +77,22 @@ def create_r2_client(settings: R2Settings | None = None) -> Any:
     )
 
 
+def generate_presigned_url(
+    object_key: str,
+    *,
+    settings: R2Settings | None = None,
+    r2_client: Any | None = None,
+) -> str:
+    """Return a temporary, signed GET URL for one object in the private bucket."""
+    settings = settings or R2Settings.from_environment()
+    client = r2_client or create_r2_client(settings)
+    return client.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": settings.bucket_name, "Key": object_key},
+        ExpiresIn=settings.presigned_url_expiry_seconds,
+    )
+
+
 def check_r2_connection(settings: R2Settings | None = None) -> None:
     """Verify read access without creating, changing, or deleting any object."""
     settings = settings or R2Settings.from_environment()

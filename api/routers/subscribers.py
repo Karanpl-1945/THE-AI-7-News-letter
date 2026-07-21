@@ -185,7 +185,15 @@ def subscribe_page() -> HTMLResponse:
 
 @router.post("/subscribe", response_model=SubscribeResponse)
 def subscribe(request: SubscribeRequest) -> SubscribeResponse:
+    from delivery.email_sender import send_welcome_email
+
     record = add_subscriber(request.email)
+    try:
+        send_welcome_email(record.email)
+    except Exception as exc:
+        # Subscribing must succeed even if the welcome email fails — the
+        # person is still on the list either way.
+        print(f"[Subscribers] Welcome email failed for {record.email}: {exc}")
     return SubscribeResponse(email=record.email, status=record.status)
 
 

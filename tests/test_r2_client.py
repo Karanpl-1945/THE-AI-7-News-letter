@@ -9,6 +9,7 @@ from storage.r2_client import (
     R2Settings,
     check_r2_connection,
     create_r2_client,
+    generate_presigned_url,
 )
 
 
@@ -90,6 +91,30 @@ class R2ClientTests(unittest.TestCase):
         )
         client.put_object.assert_not_called()
         client.delete_object.assert_not_called()
+
+    def test_presigned_url_targets_the_configured_bucket_and_expiry(self):
+        client = MagicMock()
+        client.generate_presigned_url.return_value = "https://signed.example/newsletter.html"
+        settings = R2Settings(
+            account_id="account-id",
+            access_key_id="access-key",
+            secret_access_key="secret-key",
+            bucket_name="private-bucket",
+            presigned_url_expiry_seconds=1800,
+        )
+
+        url = generate_presigned_url(
+            "newsletters/issue/run/newsletter.html",
+            settings=settings,
+            r2_client=client,
+        )
+
+        client.generate_presigned_url.assert_called_once_with(
+            "get_object",
+            Params={"Bucket": "private-bucket", "Key": "newsletters/issue/run/newsletter.html"},
+            ExpiresIn=1800,
+        )
+        self.assertEqual(url, "https://signed.example/newsletter.html")
 
 
 if __name__ == "__main__":

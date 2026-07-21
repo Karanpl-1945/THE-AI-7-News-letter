@@ -104,6 +104,36 @@ class WorkflowRepositoryTests(unittest.TestCase):
         self.assertIsNone(get_issue_by_key("2026-W99"))
 
     @patch("database.workflow_repository.database_connection")
+    def test_get_latest_sent_issue_returns_most_recent(self, mock_database_connection):
+        from database.workflow_repository import get_latest_sent_issue
+
+        mock_database_connection.return_value = self.connection_context
+        self.cursor.fetchone.return_value = (
+            self.issue_id,
+            self.run_id,
+            date(2026, 7, 20),
+        )
+
+        result = get_latest_sent_issue()
+
+        sql = self.cursor.execute.call_args.args[0]
+        self.assertIn("WHERE i.status = 'sent'", sql)
+        self.assertEqual(result.issue_id, self.issue_id)
+        self.assertEqual(result.workflow_run_id, self.run_id)
+        self.assertEqual(result.issue_date, date(2026, 7, 20))
+
+    @patch("database.workflow_repository.database_connection")
+    def test_get_latest_sent_issue_returns_none_when_nothing_sent_yet(
+        self, mock_database_connection
+    ):
+        from database.workflow_repository import get_latest_sent_issue
+
+        mock_database_connection.return_value = self.connection_context
+        self.cursor.fetchone.return_value = None
+
+        self.assertIsNone(get_latest_sent_issue())
+
+    @patch("database.workflow_repository.database_connection")
     def test_failure_records_error_and_failed_status(self, mock_database_connection):
         mock_database_connection.return_value = self.connection_context
         tracking = WorkflowTracking(self.issue_id, self.run_id)

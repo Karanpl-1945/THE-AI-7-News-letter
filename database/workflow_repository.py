@@ -30,6 +30,13 @@ class IssueLookup:
     workflow_run_id: UUID
 
 
+@dataclass(frozen=True)
+class SentIssueLookup:
+    issue_id: UUID
+    workflow_run_id: UUID
+    issue_date: date
+
+
 def _trigger_type() -> str:
     value = os.getenv("WORKFLOW_TRIGGER", "local").strip().lower()
     if value not in VALID_TRIGGER_TYPES:
@@ -182,6 +189,30 @@ def get_issue_by_key(
     if not row:
         return None
     return IssueLookup(issue_id=row[0], status=row[1], thread_id=row[2], workflow_run_id=row[3])
+
+
+def get_latest_sent_issue(
+    *,
+    database_url: str | None = None,
+) -> SentIssueLookup | None:
+    """Look up the most recently delivered issue, for welcoming new subscribers."""
+    with database_connection(database_url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT i.id, r.id, i.issue_date
+                FROM newsletter_issues i
+                JOIN workflow_runs r ON r.issue_id = i.id
+                WHERE i.status = 'sent'
+                ORDER BY i.completed_at DESC
+                LIMIT 1
+                """,
+            )
+            row = cursor.fetchone()
+
+    if not row:
+        return None
+    return SentIssueLookup(issue_id=row[0], workflow_run_id=row[1], issue_date=row[2])
 
 
 def update_issue_status(

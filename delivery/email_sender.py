@@ -81,6 +81,53 @@ def _unsubscribe_footer(recipient_email: str) -> str:
     )
 
 
+def send_welcome_email(recipient_email: str) -> bool:
+    """Welcome a brand-new subscriber, linking the latest issue if one has ever been sent.
+
+    Subscribing never triggers a resend of a past issue's full content — only a
+    temporary, private link to it (via a presigned R2 URL) — so this stays
+    consistent with the "you only get issues sent while you're subscribed"
+    idempotency the rest of delivery relies on.
+    """
+    from database.artifact_repository import get_artifacts_for_run
+    from database.workflow_repository import get_latest_sent_issue
+    from storage.r2_client import generate_presigned_url
+
+    latest = get_latest_sent_issue()
+    if latest is None:
+        body = (
+            "<h2>Welcome to THE AI 7!</h2>"
+            "<p>You're subscribed. You'll get a new issue every Sunday, "
+            "reviewed by hand before it's sent.</p>"
+        )
+        return get_email_transport().send(
+            to=recipient_email,
+            subject="Welcome to THE AI 7!",
+            html=body + _unsubscribe_footer(recipient_email),
+        )
+
+    artifacts = get_artifacts_for_run(latest.workflow_run_id)
+    html_record = artifacts.get("html")
+    latest_link = (
+        f"<p><a href='{generate_presigned_url(html_record.object_key)}'>"
+        f"Read the {latest.issue_date.strftime('%B %d, %Y')} issue &rarr;</a></p>"
+        if html_record
+        else ""
+    )
+    body = (
+        "<h2>Welcome to THE AI 7!</h2>"
+        "<p>You're subscribed. You'll get a new issue every Sunday, "
+        "reviewed by hand before it's sent.</p>"
+        f"{latest_link}"
+        "<p>In the meantime, here's the most recent issue to get you started.</p>"
+    )
+    return get_email_transport().send(
+        to=recipient_email,
+        subject="Welcome to THE AI 7! Here's the latest issue",
+        html=body + _unsubscribe_footer(recipient_email),
+    )
+
+
 def send_to_subscriber(
     html_content: str,
     pdf_path: Optional[str],
